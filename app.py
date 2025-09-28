@@ -909,7 +909,7 @@ class IntegratedDashboard:
 def main() -> None:
     st.set_page_config(
         page_title="Ads Analyzer v3.0",
-        page_icon="📊",
+        page_icon="🎤🎭",
         layout="wide",
         initial_sidebar_state="expanded",
     )
