@@ -988,7 +988,8 @@ def main() -> None:
         dashboard.render_raw_tables(sales_df, dashboard.ads_data_by_type)
 
     st.markdown("---")
-    st.caption("Built with ❤️ using Streamlit · Ads Analyzer v3.0")
+    st.caption("Built for Flai Data using Streamlit · Ads Analyzer v3.0 | **© 2025 Avner Gomes**")
+
 
 
 if __name__ == "__main__":
