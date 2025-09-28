@@ -909,12 +909,12 @@ class IntegratedDashboard:
 def main() -> None:
     st.set_page_config(
         page_title="Ads Analyzer v3.0",
-        page_icon="🎤🎭",
+        page_icon="🎭",
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
-    st.title("📊 Ads Analyzer v3.0")
+    st.title("📊Flai Data's Ads Analyzer | v3.0")
     st.caption(
         "Integrated performance insights across Meta ads and live ticket sales. Upload the Meta report exports (Days, Days + Placement + Device, Days + Time) to unlock the full analysis."
     )
