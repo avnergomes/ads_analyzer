@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import re
 import warnings
@@ -15,6 +16,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+
+HAS_STATSMODELS = importlib.util.find_spec("statsmodels") is not None
 
 from public_sheets_connector import PublicSheetsConnector
 
@@ -829,6 +832,8 @@ class IntegratedDashboard:
 
         chart_col1, chart_col2 = st.columns(2)
 
+        trendline_mode = "ols" if HAS_STATSMODELS else None
+
         with chart_col1:
             st.markdown("**Spend vs. Tickets Sold**")
             fig = px.scatter(
@@ -836,7 +841,7 @@ class IntegratedDashboard:
                 x="spend",
                 y="total_sold",
                 hover_data=["integration_date"],
-                trendline="ols",
+                trendline=trendline_mode,
                 labels={"spend": "Spend", "total_sold": "Tickets Sold"},
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -848,10 +853,15 @@ class IntegratedDashboard:
                 x="impressions",
                 y="sales_to_date",
                 hover_data=["integration_date"],
-                trendline="ols",
+                trendline=trendline_mode,
                 labels={"impressions": "Impressions", "sales_to_date": "Revenue"},
             )
             st.plotly_chart(fig, use_container_width=True)
+
+        if trendline_mode is None:
+            st.caption(
+                "Install `statsmodels` to enable regression trendlines in the integrated analysis charts."
+            )
 
         correlations = {
             "Spend vs. Tickets": merged["spend"].corr(merged["total_sold"]),
