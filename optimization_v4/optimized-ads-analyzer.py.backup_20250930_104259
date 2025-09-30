@@ -15,7 +15,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 from public_sheets_connector import PublicSheetsConnector
-from data_mapper import DataMapper, integrate_sales_and_ads_data, safe_numeric
 
 warnings.filterwarnings("ignore")
 HAS_STATSMODELS = importlib.util.find_spec("statsmodels") is not None
@@ -668,7 +667,7 @@ class IntegratedDashboard:
         days_to_show = max((latest["show_date"].date() - date.today()).days, 0)
         remaining = latest.get("remaining", 0)
         daily_target = remaining / max(days_to_show, 1)
-        avg_sales_7d = avg_sales_last_7_days
+        avg_sales_7d = latest.get("avg_sales_last_7_days", 0)
         
         # Calculate performance score
         pace_score = min(100, (avg_sales_7d / daily_target * 100)) if daily_target > 0 else 0
@@ -764,7 +763,7 @@ class IntegratedDashboard:
             # ROAS indicator
             roas = 0
             if funnel and funnel.spend > 0:
-                revenue = sales_to_date
+                revenue = latest.get("sales_to_date", 0)
                 roas = revenue / funnel.spend
             
             fig = go.Figure(go.Indicator(
@@ -814,56 +813,36 @@ class IntegratedDashboard:
         latest = show_records.iloc[-1]
         funnel = funnel_summary.get(selected_show)
         
-        # ============ CORREÇÃO DO ERRO - Tratamento robusto de valores ============
-        def safe_numeric_local(value, default=0):
-            """Converte valor para numérico de forma segura."""
-            if pd.isna(value) or value is None:
-                return default
-            try:
-                return float(value)
-            except (ValueError, TypeError):
-                return default
-        
-        # Extrair valores com tratamento seguro
-        capacity = safe_numeric_local(latest.get('capacity', 0))
-        remaining = safe_numeric_local(latest.get('remaining', 0))
-        total_sold = safe_numeric_local(latest.get('total_sold', 0))
-        today_sold = safe_numeric_local(latest.get('today_sold', 0))
-        sales_to_date = safe_numeric_local(sales_to_date)
-        avg_ticket_price = safe_numeric_local(avg_ticket_price)
-        days_to_show = safe_numeric_local(days_to_show)
-        avg_sales_last_7_days = safe_numeric_local(avg_sales_last_7_days)
-        
         # Key metrics in columns
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.metric(
                 "Total Capacity",
-                f"{int(capacity):,}",
-                delta=f"{int(remaining):,} remaining"
+                f"{int(latest.get('capacity', 0)):,}",
+                delta=f"{int(latest.get('remaining', 0)):,} remaining"
             )
             
         with col2:
             st.metric(
                 "Tickets Sold",
-                f"{int(total_sold):,}",
-                delta=f"{int(today_sold):,} today"
+                f"{int(latest.get('total_sold', 0)):,}",
+                delta=f"{int(latest.get('today_sold', 0)):,} today"
             )
             
         with col3:
             st.metric(
                 "Revenue",
-                f"${sales_to_date:,.0f}",
-                delta=f"${avg_ticket_price:.0f} avg ticket"
+                f"${latest.get('sales_to_date', 0):,.0f}",
+                delta=f"${latest.get('avg_ticket_price', 0):.0f} avg ticket"
             )
             
         with col4:
-            daily_target = latest.get('remaining', 0) / max(days_to_show, 1)
+            daily_target = latest.get('remaining', 0) / max(latest.get('days_to_show', 1), 1)
             st.metric(
                 "Daily Target",
                 f"{daily_target:.0f}",
-                delta=f"{avg_sales_last_7_days:.0f} avg 7d"
+                delta=f"{latest.get('avg_sales_last_7_days', 0):.0f} avg 7d"
             )
         
         # Budget input for ticket cost calculation
@@ -889,7 +868,7 @@ class IntegratedDashboard:
         
         with col2:
             if budget_input > 0 and latest.get('total_sold', 0) > 0:
-                ticket_cost = budget_input / total_sold
+                ticket_cost = budget_input / latest['total_sold']
                 col2_1, col2_2, col2_3 = st.columns(3)
                 
                 with col2_1:
@@ -897,7 +876,7 @@ class IntegratedDashboard:
                 
                 with col2_2:
                     if funnel and funnel.spend > 0:
-                        daily_cpa = funnel.spend / total_sold
+                        daily_cpa = funnel.spend / latest['total_sold']
                         st.metric("Daily Sales CPA", f"${daily_cpa:.2f}")
                     
                 with col2_3:
@@ -979,7 +958,7 @@ class IntegratedDashboard:
                     y=show_records.tail(14)["today_sold"],
                     name="Daily Sales",
                     marker_color=show_records.tail(14)["today_sold"].apply(
-                        lambda x: "#27ae60" if safe_numeric_local(x) > daily_target else "#e74c3c"
+                        lambda x: "#27ae60" if x > daily_target else "#e74c3c"
                     )
                 ),
                 row=2, col=1
@@ -1080,7 +1059,7 @@ class IntegratedDashboard:
                     x=recent["day_of_week"],
                     y=recent["today_sold"],
                     marker_color=recent["today_sold"].apply(
-                        lambda x: "#27ae60" if safe_numeric_local(x) > daily_target else "#e67e22" if x > daily_target*0.5 else "#e74c3c"
+                        lambda x: "#27ae60" if x > daily_target else "#e67e22" if x > daily_target*0.5 else "#e74c3c"
                     ),
                     text=recent["today_sold"],
                     textposition='outside'
@@ -1522,83 +1501,6 @@ def main():
     with tab4:
         days_df = dashboard.ads_data_by_type.get("days") if dashboard.ads_data_by_type else None
         dashboard.create_integration_analysis(dashboard.sales_data, days_df)
-    # Data Mapper e Qualidade
-    if st.session_state.get("sales_data") is not None and len(dashboard.ads_data_by_type) > 0:
-        with st.expander("🔗 Mapeamento de Dados - Qualidade e Integração"):
-            st.markdown("### Relatório de Qualidade dos Dados")
-            
-            mapper = DataMapper()
-            
-            # Validar Sales
-            st.markdown("#### 📊 Dados de Vendas (Google Sheets)")
-            sales_quality = mapper.validate_data_quality(
-                st.session_state["sales_data"], 
-                'sales'
-            )
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Linhas", sales_quality['row_count'])
-            col2.metric("Colunas", sales_quality['column_count'])
-            col3.metric("Qualidade", "✅ Válido" if sales_quality['valid'] else "❌ Inválido")
-            
-            if sales_quality['warnings']:
-                st.warning("\n".join(sales_quality['warnings']))
-            
-            # Validar Ads
-            if 'days' in dashboard.ads_data_by_type:
-                st.markdown("#### 📈 Dados de Anúncios (Meta)")
-                ads_quality = mapper.validate_data_quality(
-                    dashboard.ads_data_by_type['days'],
-                    'ads'
-                )
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Linhas", ads_quality['row_count'])
-                col2.metric("Colunas", ads_quality['column_count'])
-                col3.metric("Qualidade", "✅ Válido" if ads_quality['valid'] else "❌ Inválido")
-                
-                if ads_quality['warnings']:
-                    st.warning("\n".join(ads_quality['warnings']))
-            
-            # Integração
-            st.markdown("### 🔄 Integração de Dados")
-            
-            if st.button("Executar Integração Avançada"):
-                with st.spinner("Integrando dados..."):
-                    integrated, stats = integrate_sales_and_ads_data(
-                        st.session_state["sales_data"],
-                        dashboard.ads_data_by_type.get('days'),
-                        dashboard.ads_data_by_type.get('days_placement_device'),
-                        dashboard.ads_data_by_type.get('days_time')
-                    )
-                    
-                    # Mostrar estatísticas
-                    st.success("✅ Integração concluída!")
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Shows Total", stats['total_shows'])
-                    col2.metric("Shows Matched", stats['matched_shows'])
-                    col3.metric("Shows Unmatched", stats['unmatched_shows'])
-                    if stats['total_shows'] > 0:
-                        col4.metric("Taxa de Match", f"{(stats['matched_shows']/stats['total_shows']*100):.1f}%")
-                    
-                    # Mostrar preview
-                    st.markdown("#### Preview dos Dados Integrados")
-                    st.dataframe(integrated.head(20), use_container_width=True)
-                    
-                    # Opção de download
-                    csv = integrated.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Download Dados Integrados (CSV)",
-                        data=csv,
-                        file_name="integrated_sales_ads_data.csv",
-                        mime="text/csv"
-                    )
-    
-
-    
-    # Footer
-    st.markdown("---")
     
     # Footer
     st.markdown("---")
