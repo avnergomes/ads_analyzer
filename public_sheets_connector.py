@@ -6,6 +6,7 @@ import requests
 import csv
 from io import StringIO
 from datetime import datetime
+from typing import Optional
 import re
 import logging
 
@@ -18,7 +19,36 @@ class PublicSheetsConnector:
         # Public sheet URL (CSV export format)
         self.sheet_id = "1hVm1OALKQ244zuJBQV0SsQT08A2_JTDlPytUNULRofA"
         self.csv_url = f"https://docs.google.com/spreadsheets/d/{self.sheet_id}/export?format=csv&gid=0"
-        
+
+        # Currency handling helpers
+        self.currency_symbol_map = {
+            "R$": "BRL",
+            "€": "EUR",
+            "£": "GBP",
+            "¥": "JPY",
+            "₡": "CRC",
+            "C$": "CAD",
+            "A$": "AUD",
+            "MX$": "MXN",
+            "COP$": "COP",
+            "CLP$": "CLP",
+        }
+        self.default_exchange_rates = {
+            "USD": 1.0,
+            "BRL": 5.0,
+            "EUR": 0.92,
+            "GBP": 0.79,
+            "CAD": 1.36,
+            "AUD": 1.5,
+            "MXN": 16.8,
+            "CRC": 515.0,
+            "JPY": 151.0,
+            "COP": 3920.0,
+            "CLP": 925.0,
+        }
+        self.exchange_rates = None
+        self.exchange_rates_last_updated = None
+
         # Column mapping derived from the sheet structure
         self.column_mapping = {
             0: 'show_id',           # Show identifier (e.g. WDC_0927)
@@ -57,6 +87,8 @@ class PublicSheetsConnector:
             # Download CSV content
             response = requests.get(self.csv_url, timeout=30)
             response.raise_for_status()
+
+            self._ensure_exchange_rates()
 
             # Parse CSV
             csv_data = StringIO(response.text)
@@ -117,6 +149,9 @@ class PublicSheetsConnector:
                 continue
 
             elif line_type in ["month_asterisk", "end_row", "header"]:
+                if line_type == "end_row":
+                    logger.info("Encountered endRow marker at row %s. Stopping parse.", row_idx)
+                    break
                 logger.debug("Skipping helper row (%s): %s", line_type, first_cell)
                 continue
 
@@ -208,20 +243,16 @@ class PublicSheetsConnector:
         str_value = str(value).strip()
 
         if field_name in ['sales_to_date']:
-            cleaned = re.sub(r'[$R$,\s]', '', str_value)
-            try:
-                return float(cleaned)
-            except:
+            amount = self._parse_numeric_amount(str_value)
+            if amount is None:
                 return None
+            currency_code = self._detect_currency_code(str_value)
+            return self._convert_to_usd(amount, currency_code)
 
         if field_name in ['capacity', 'venue_holds', 'wheelchair_companions', 'camera',
                          'artists_hold', 'kills', 'yesterday_sales', 'today_sold',
                          'total_sold', 'remaining', 'sold_percentage', 'atp']:
-            try:
-                cleaned = re.sub(r'[,\s]', '', str_value)
-                return float(cleaned) if cleaned else None
-            except:
-                return None
+            return self._parse_numeric_amount(str_value)
 
         if field_name in ['show_date', 'report_date']:
             try:
@@ -316,6 +347,16 @@ class PublicSheetsConnector:
         )
         df = df.set_index('index').sort_index()
 
+        report_rank = (
+            df['report_date']
+            .fillna(pd.Timestamp.min)
+            .groupby(df['show_id'])
+            .rank(method='first')
+        )
+        df['is_latest_snapshot'] = report_rank.groupby(df['show_id']).transform(
+            lambda s: s == s.max()
+        )
+
         df['performance_category'] = pd.cut(
             df['occupancy_rate'],
             bins=[0, 50, 75, 90, 100],
@@ -347,29 +388,135 @@ class PublicSheetsConnector:
         if df is None or df.empty:
             return {"error": "No data available"}
 
+        latest = self._latest_snapshots(df)
+
         summary = {
-            "total_shows": len(df),
-            "unique_cities": df['city'].nunique() if 'city' in df.columns else 0,
-            "total_capacity": df['capacity'].sum(),
-            "total_sold": df['total_sold'].sum(),
-            "total_revenue": df['sales_to_date'].sum(),
-            "avg_occupancy": df['occupancy_rate'].mean(),
+            "total_shows": len(latest),
+            "unique_cities": latest['city'].nunique() if 'city' in latest.columns else 0,
+            "total_capacity": latest['capacity'].sum(),
+            "total_sold": latest['total_sold'].sum(),
+            "total_revenue": latest['sales_to_date'].sum(),
+            "avg_occupancy": latest['occupancy_rate'].mean(),
             "date_range": {
-                "start": df['show_date'].min(),
-                "end": df['show_date'].max()
+                "start": latest['show_date'].min(),
+                "end": latest['show_date'].max()
             },
-            "cities": df['city'].value_counts().to_dict() if 'city' in df.columns else {},
-            "performance_distribution": df['performance_category'].value_counts().to_dict() if 'performance_category' in df.columns else {},
+            "cities": latest['city'].value_counts().to_dict() if 'city' in latest.columns else {},
+            "performance_distribution": latest['performance_category'].value_counts().to_dict() if 'performance_category' in latest.columns else {},
             "data_quality": {
-                "complete_records": df.dropna().shape[0],
-                "missing_revenue": df['sales_to_date'].isnull().sum(),
-                "missing_dates": df['show_date'].isnull().sum()
+                "complete_records": latest.dropna().shape[0],
+                "missing_revenue": latest['sales_to_date'].isnull().sum(),
+                "missing_dates": latest['show_date'].isnull().sum()
             },
-            "avg_daily_sales_target": df['daily_sales_target'].mean(skipna=True),
-            "avg_sales_last_7_days": df['avg_sales_last_7_days'].mean(skipna=True),
+            "avg_daily_sales_target": latest['daily_sales_target'].mean(skipna=True),
+            "avg_sales_last_7_days": latest['avg_sales_last_7_days'].mean(skipna=True),
         }
 
         return summary
+
+    def _ensure_exchange_rates(self):
+        """Fetch exchange rates (USD base) with caching and fallbacks."""
+        if (
+            self.exchange_rates is not None
+            and self.exchange_rates_last_updated is not None
+            and (datetime.utcnow() - self.exchange_rates_last_updated).total_seconds() < 6 * 3600
+        ):
+            return
+
+        try:
+            response = requests.get("https://open.er-api.com/v6/latest/USD", timeout=10)
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("result") == "success" and "rates" in payload:
+                self.exchange_rates = payload["rates"]
+                self.exchange_rates_last_updated = datetime.utcnow()
+                logger.info("Exchange rates refreshed from remote API.")
+                return
+            else:
+                logger.warning("Unexpected exchange rate payload structure: %s", payload)
+        except Exception as exc:
+            logger.warning("Failed to refresh exchange rates: %s", exc)
+
+        if self.exchange_rates is None:
+            self.exchange_rates = self.default_exchange_rates.copy()
+            self.exchange_rates_last_updated = datetime.utcnow()
+            logger.info("Using default exchange rates fallback.")
+
+    def _detect_currency_code(self, raw_value: str) -> str:
+        """Identify the currency code based on symbols or explicit codes."""
+        for symbol, code in self.currency_symbol_map.items():
+            if symbol in raw_value:
+                return code
+
+        match = re.search(r"([A-Z]{3})", raw_value)
+        if match:
+            code = match.group(1).upper()
+            if code in self.default_exchange_rates:
+                return code
+
+        return "USD"
+
+    def _parse_numeric_amount(self, raw_value: str) -> float:
+        """Parse a numeric string handling thousands separators and decimals."""
+        if raw_value is None:
+            return None
+
+        value = str(raw_value).strip().replace("\u00a0", "").replace("\u202f", "")
+        cleaned = re.sub(r"[^0-9,.-]", "", value)
+
+        if cleaned.count(",") and cleaned.count("."):
+            if cleaned.rfind(".") > cleaned.rfind(","):
+                cleaned = cleaned.replace(",", "")
+            else:
+                cleaned = cleaned.replace(".", "").replace(",", ".")
+        elif cleaned.count(",") == 1 and cleaned.count(".") == 0:
+            integer_part, fractional_part = cleaned.split(",")
+            if len(fractional_part) in {1, 2}:
+                cleaned = f"{integer_part.replace(',', '')}.{fractional_part}"
+            else:
+                cleaned = cleaned.replace(",", "")
+        else:
+            cleaned = cleaned.replace(",", "")
+
+        try:
+            return float(cleaned)
+        except (TypeError, ValueError):
+            logger.debug("Failed to parse numeric amount from '%s'", raw_value)
+            return None
+
+    def _convert_to_usd(self, amount: float, currency_code: str) -> Optional[float]:
+        """Convert the provided amount into USD using cached exchange rates."""
+        if amount is None:
+            return None
+
+        currency_code = (currency_code or "USD").upper()
+        if currency_code == "USD":
+            return amount
+
+        self._ensure_exchange_rates()
+        rates = self.exchange_rates or {}
+        rate = rates.get(currency_code)
+        if not rate:
+            rate = self.default_exchange_rates.get(currency_code)
+
+        if not rate or rate == 0:
+            logger.warning("Missing exchange rate for %s. Leaving amount unchanged.", currency_code)
+            return amount
+
+        return amount / rate
+
+    def _latest_snapshots(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Return one record per show using the most recent snapshot."""
+        if df is None or df.empty:
+            return df
+
+        sort_columns = [col for col in ["show_id", "report_date", "extraction_date"] if col in df.columns]
+        if not sort_columns:
+            return df.drop_duplicates("show_id", keep="last")
+
+        sorted_df = df.sort_values(sort_columns)
+        latest = sorted_df.drop_duplicates("show_id", keep="last")
+        return latest.reset_index(drop=True)
 
     def create_sample_ads_data_mapping(self, df):
         """Create helper mappings to connect sales data with sample ad structures."""

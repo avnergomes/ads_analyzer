@@ -443,6 +443,19 @@ class IntegratedDashboard:
         self.ads_data_by_type: Dict[str, pd.DataFrame] = {}
         self.funnel_summary: Dict[str, FunnelSummary] = {}
 
+    def _latest_snapshot(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Return a DataFrame with a single, most recent row per show."""
+        if df is None or df.empty:
+            return df
+
+        sort_columns = [col for col in ["show_id", "report_date", "extraction_date"] if col in df.columns]
+        if not sort_columns:
+            return df.drop_duplicates("show_id", keep="last")
+
+        sorted_df = df.sort_values(sort_columns)
+        latest = sorted_df.drop_duplicates("show_id", keep="last")
+        return latest.reset_index(drop=True)
+
     # ----------------------------- Sales --------------------------------- #
     def create_sales_overview(self, df: pd.DataFrame) -> None:
         if df is None or df.empty:
@@ -451,13 +464,18 @@ class IntegratedDashboard:
 
         st.subheader("🎫 Ticket Sales Overview")
 
-        total_shows = len(df["show_id"].unique())
-        total_capacity = df["capacity"].sum()
-        total_sold = df["total_sold"].sum()
-        total_revenue = df["sales_to_date"].sum()
-        avg_occupancy = df["occupancy_rate"].mean()
-        cities_count = df["city"].nunique()
-        sold_out_shows = (df["occupancy_rate"] >= 99).sum()
+        latest_df = self._latest_snapshot(df)
+        if latest_df is None or latest_df.empty:
+            st.warning("Ticket sales data is available but no latest snapshots could be derived yet.")
+            return
+
+        total_shows = len(latest_df["show_id"].unique())
+        total_capacity = latest_df["capacity"].sum()
+        total_sold = latest_df["total_sold"].sum()
+        total_revenue = latest_df["sales_to_date"].sum()
+        avg_occupancy = latest_df["occupancy_rate"].mean()
+        cities_count = latest_df["city"].nunique()
+        sold_out_shows = (latest_df["occupancy_rate"] >= 99).sum()
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Shows", f"{total_shows:,}")
@@ -467,7 +485,7 @@ class IntegratedDashboard:
 
         col5, col6, col7, col8 = st.columns(4)
         col5.metric("Average Occupancy", f"{avg_occupancy:.1f}%")
-        col6.metric("Average Ticket Price", f"${df['avg_ticket_price'].mean():,.0f}")
+        col6.metric("Average Ticket Price", f"${latest_df['avg_ticket_price'].mean():,.0f}")
         col7.metric("Cities", f"{cities_count}")
         col8.metric("Sold Out", f"{sold_out_shows}")
 
@@ -475,12 +493,16 @@ class IntegratedDashboard:
         if df is None or df.empty:
             return
 
+        latest_df = self._latest_snapshot(df)
+        if latest_df is None or latest_df.empty:
+            return
+
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Top Cities by Tickets Sold**")
-            if {"city", "total_sold", "capacity"}.issubset(df.columns):
+            if {"city", "total_sold", "capacity"}.issubset(latest_df.columns):
                 city_performance = (
-                    df.groupby("city")
+                    latest_df.groupby("city")
                     .agg({"total_sold": "sum", "capacity": "sum", "sales_to_date": "sum"})
                     .reset_index()
                 )
@@ -503,9 +525,9 @@ class IntegratedDashboard:
 
         with col2:
             st.markdown("**Occupancy Distribution**")
-            if "occupancy_rate" in df.columns:
+            if "occupancy_rate" in latest_df.columns:
                 fig = px.histogram(
-                    df,
+                    latest_df,
                     x="occupancy_rate",
                     nbins=20,
                     labels={"occupancy_rate": "Occupancy %"},
@@ -514,10 +536,10 @@ class IntegratedDashboard:
                 fig.update_layout(height=420)
                 st.plotly_chart(fig, use_container_width=True)
 
-        if "show_date" in df.columns and df["show_date"].notna().any():
+        if "show_date" in latest_df.columns and latest_df["show_date"].notna().any():
             st.markdown("**Ticket Sales over Time**")
             daily = (
-                df.groupby("show_date").agg({"today_sold": "sum", "sales_to_date": "sum", "total_sold": "sum"}).reset_index()
+                latest_df.groupby("show_date").agg({"today_sold": "sum", "sales_to_date": "sum", "total_sold": "sum"}).reset_index()
             )
             fig = go.Figure()
             fig.add_trace(
@@ -798,14 +820,23 @@ class IntegratedDashboard:
 
         st.subheader("🔗 Integrated Performance")
 
-        if "integration_date" not in sales_df.columns:
-            sales_df = sales_df.copy()
-            sales_df["integration_date"] = pd.to_datetime(sales_df["show_date"]).dt.date
+        sales_snapshot = self._latest_snapshot(sales_df)
+        if sales_snapshot is None or sales_snapshot.empty:
+            st.info("Ticket sales data is loaded but no latest snapshots are available yet.")
+            return
+
+        if "integration_date" not in sales_snapshot.columns:
+            sales_snapshot = sales_snapshot.copy()
+            sales_snapshot["integration_date"] = pd.to_datetime(sales_snapshot["show_date"]).dt.date
+        else:
+            sales_snapshot = sales_snapshot.copy()
+            sales_snapshot["integration_date"] = pd.to_datetime(sales_snapshot["integration_date"]).dt.date
+
         if "integration_date" not in ads_df.columns:
             ads_df = ads_df.copy()
             ads_df["integration_date"] = pd.to_datetime(ads_df["date"]).dt.date
 
-        sales_dates = set(sales_df["integration_date"].dropna())
+        sales_dates = set(sales_snapshot["integration_date"].dropna())
         ads_dates = set(ads_df["integration_date"].dropna())
         overlap_dates = sales_dates.intersection(ads_dates)
 
@@ -820,7 +851,7 @@ class IntegratedDashboard:
             return
 
         sales_by_date = (
-            sales_df.groupby("integration_date").agg({"total_sold": "sum", "sales_to_date": "sum"}).reset_index()
+            sales_snapshot.groupby("integration_date").agg({"total_sold": "sum", "sales_to_date": "sum"}).reset_index()
         )
         ads_by_date = (
             ads_df.groupby("integration_date").agg({"impressions": "sum", "clicks": "sum", "spend": "sum", "purchases": "sum"}).reset_index()
@@ -914,7 +945,7 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
 
-    st.title("📊Flai Data's Ads Analyzer | v3.0")
+    st.title("🎭 Ads & Ticket Analyzer v3.0")
     st.caption(
         "Integrated performance insights across Meta ads and live ticket sales. Upload the Meta report exports (Days, Days + Placement + Device, Days + Time) to unlock the full analysis."
     )
@@ -988,7 +1019,6 @@ def main() -> None:
         dashboard.render_raw_tables(sales_df, dashboard.ads_data_by_type)
 
     st.markdown("---")
-    st.caption("Built for Flai Data using Streamlit · Ads Analyzer v3.0 | **© 2025 Avner Gomes**")
 
 
 
