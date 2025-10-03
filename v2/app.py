@@ -822,11 +822,20 @@ class IntegratedDashboard:
                 ),
                 secondary_y=True,
             )
+            start_date = timeline["report_date"].dropna().min()
+            end_date = pd.Timestamp.today().normalize()
+            if pd.isna(start_date):
+                start_date = end_date
+            if pd.isna(end_date):
+                end_date = start_date
+            if start_date is not None and end_date is not None and start_date > end_date:
+                end_date = start_date
+
             fig.update_layout(
                 height=420,
                 xaxis_title="Report Date",
                 hovermode="x unified",
-                xaxis=dict(type="date"),
+                xaxis=dict(type="date", range=[start_date, end_date]),
             )
             fig.update_yaxes(title_text="Daily Tickets Sold", secondary_y=False)
             fig.update_yaxes(title_text="Cumulative Tickets Sold", secondary_y=True)
@@ -863,11 +872,20 @@ class IntegratedDashboard:
                 ),
                 secondary_y=True,
             )
+            start_date = daily["show_date"].dropna().min()
+            end_date = pd.Timestamp.today().normalize()
+            if pd.isna(start_date):
+                start_date = end_date
+            if pd.isna(end_date):
+                end_date = start_date
+            if start_date is not None and end_date is not None and start_date > end_date:
+                end_date = start_date
+
             fig.update_layout(
                 height=420,
                 xaxis_title="Show Date",
                 hovermode="x unified",
-                xaxis=dict(type="date"),
+                xaxis=dict(type="date", range=[start_date, end_date]),
             )
             fig.update_yaxes(title_text="Daily Tickets Sold", secondary_y=False)
             fig.update_yaxes(title_text="Cumulative Tickets Sold", secondary_y=True)
