@@ -717,15 +717,43 @@ class IntegratedDashboard:
             .sort_values("report_date")
         )
 
-        daily_totals["raw_total"] = daily_totals["raw_total"].fillna(0.0)
+        if daily_totals.empty:
+            return pd.DataFrame()
+
+        daily_totals["reported_flag"] = daily_totals["reported_daily"].notna()
+        daily_totals = daily_totals.set_index("report_date")
+
+        start = daily_totals.index.min()
+        end = pd.Timestamp.today().normalize()
+        if pd.isna(start):
+            return pd.DataFrame()
+        if pd.isna(end) or end < start:
+            end = start
+
+        full_range = pd.date_range(start=start, end=end, freq="D")
+        daily_totals = daily_totals.reindex(full_range)
+        daily_totals.index.name = "report_date"
+
+        daily_totals["raw_total"] = daily_totals["raw_total"].ffill().fillna(0.0)
         daily_totals["reported_daily"] = daily_totals["reported_daily"].fillna(0.0)
+        daily_totals["reported_flag"] = daily_totals["reported_flag"].fillna(False)
+
         daily_totals["cumulative_total"] = daily_totals["raw_total"].cummax()
+        incremental_from_totals = (
+            daily_totals["cumulative_total"].diff().fillna(daily_totals["cumulative_total"])
+        )
+        incremental_from_totals = incremental_from_totals.clip(lower=0.0)
+        daily_totals["daily_sold"] = np.where(
+            daily_totals["reported_flag"],
+            daily_totals["reported_daily"],
+            incremental_from_totals,
+        )
+        daily_totals["daily_sold"] = daily_totals["daily_sold"].fillna(0.0)
+        daily_totals["cumulative_total"] = daily_totals["cumulative_total"].fillna(0.0)
 
-        incremental_from_totals = daily_totals["cumulative_total"].diff().fillna(daily_totals["cumulative_total"])
-        use_reported = daily_totals["reported_daily"].notna() & (daily_totals["reported_daily"] != 0)
-        daily_totals["daily_sold"] = np.where(use_reported, daily_totals["reported_daily"], incremental_from_totals)
-
-        return daily_totals[["report_date", "cumulative_total", "daily_sold", "raw_total"]]
+        return daily_totals.reset_index()[
+            ["report_date", "cumulative_total", "daily_sold", "raw_total"]
+        ]
 
     # ----------------------------- Sales --------------------------------- #
     def create_sales_overview(self, df: pd.DataFrame) -> None:
@@ -936,11 +964,25 @@ class IntegratedDashboard:
 
         st.caption("Key metrics are based on the most recent report available for this show.")
 
-        col1, col2, col3, col4 = st.columns(4)
+        start_sales_date = (
+            show_records["report_date"].dropna().min()
+            if "report_date" in show_records.columns
+            else None
+        )
+        if pd.notna(start_sales_date):
+            start_sales_display = pd.to_datetime(start_sales_date).strftime("%b %d, %Y")
+        else:
+            start_sales_display = "Not available"
+
+        col1, col2, col3 = st.columns(3)
         col1.metric("Days to Show", days_to_show)
         col2.metric("Occupancy", f"{occupancy:.1f}%")
         col3.metric("Tickets Remaining", f"{int(remaining_tickets):,}")
-        col4.metric(
+
+        col4, col5, col6 = st.columns(3)
+        col4.metric("Total Capacity", f"{int(total_capacity):,}")
+        col5.metric("Sales Start Date", start_sales_display)
+        col6.metric(
             "Daily Sales Target",
             f"{daily_sales_target:.1f}",
             delta=f"{avg_sales_last_7:.1f} avg last 7d",
@@ -1052,7 +1094,21 @@ class IntegratedDashboard:
             st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("**Seven-day sales cadence**")
-        cadence = show_records.tail(7)
+        end = pd.Timestamp.today().normalize()
+
+        cadence = show_records.copy()
+        cadence["report_date"] = pd.to_datetime(cadence["report_date"]).dt.normalize()
+        cadence = (
+            cadence.groupby("report_date")
+            .agg(today_sold=("today_sold", lambda s: float(np.nansum(s))))
+            .sort_index()
+        )
+
+        cadence_start = end - pd.Timedelta(days=6)
+        cadence_range = pd.date_range(start=cadence_start, end=end, freq="D")
+        cadence = cadence.reindex(cadence_range).fillna(0.0)
+        cadence = cadence.reset_index().rename(columns={"index": "report_date"})
+
         cadence_fig = px.bar(
             cadence,
             x="report_date",
