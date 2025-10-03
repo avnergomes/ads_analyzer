@@ -1,0 +1,206 @@
+"""
+PATCH INSTRUCTIONS - optimized-ads-analyzer.py v4.1
+====================================================
+
+This file contains instructions to fix the error on line 823 and improve the system.
+
+FIX 1: Import DataMapper
+---------------------------------
+At the beginning of the file, AFTER other imports, add:
+
+from data_mapper import DataMapper, integrate_sales_and_ads_data, safe_numeric
+
+
+FIX 2: render_show_health method (starting at line ~780)
+----------------------------------------------------------------
+LOCATE the function:
+    def render_show_health(self, df: pd.DataFrame, funnel_summary: Dict[str, FunnelSummary]) -> None:
+
+REPLACE the lines that extract values from 'latest' (approximately lines 800-810) with:
+
+        # ============ ERROR FIX - Robust value handling ============
+        def safe_numeric_local(value, default=0):
+            """Safely converts value to numeric."""
+            if pd.isna(value) or value is None:
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+        
+        # Extract values with safe handling
+        capacity = safe_numeric_local(latest.get('capacity', 0))
+        remaining = safe_numeric_local(latest.get('remaining', 0))
+        total_sold = safe_numeric_local(latest.get('total_sold', 0))
+        today_sold = safe_numeric_local(latest.get('today_sold', 0))
+        sales_to_date = safe_numeric_local(latest.get('sales_to_date', 0))
+        avg_ticket_price = safe_numeric_local(latest.get('avg_ticket_price', 0))
+        days_to_show = safe_numeric_local(latest.get('days_to_show', 1))
+        avg_sales_last_7_days = safe_numeric_local(latest.get('avg_sales_last_7_days', 0))
+
+THEN, REPLACE all references to latest.get() in metrics with variables:
+- latest.get('capacity', 0) → capacity
+- latest.get('remaining', 0) → remaining
+- latest.get('total_sold', 0) → total_sold
+- latest.get('today_sold', 0) → today_sold
+- latest.get('sales_to_date', 0) → sales_to_date
+- latest.get('avg_ticket_price', 0) → avg_ticket_price
+- latest.get('days_to_show', 1) → days_to_show
+- latest.get('avg_sales_last_7_days', 0) → avg_sales_last_7_days
+
+Example BEFORE:
+        with col1:
+            st.metric(
+                "Total Capacity",
+                f"{int(latest.get('capacity', 0)):,}",
+                delta=f"{int(latest.get('remaining', 0)):,} remaining"
+            )
+
+Example AFTER:
+        with col1:
+            st.metric(
+                "Total Capacity",
+                f"{int(capacity):,}",
+                delta=f"{int(remaining):,} remaining"
+            )
+
+
+FIX 3: daily_target calculation (line ~850)
+--------------------------------------------------
+LOCATE:
+            daily_target = latest.get('remaining', 0) / max(latest.get('days_to_show', 1), 1)
+
+REPLACE WITH:
+            daily_target = remaining / max(days_to_show, 1)
+
+
+FIX 4: budget_input condition (line ~870)
+--------------------------------------------------
+LOCATE:
+            if budget_input > 0 and latest.get('total_sold', 0) > 0:
+                ticket_cost = budget_input / latest['total_sold']
+
+REPLACE WITH:
+            if budget_input > 0 and total_sold > 0:
+                ticket_cost = budget_input / total_sold
+
+
+FIX 5: Adjust charts (lines ~950 and ~1020)
+------------------------------------------------------
+LOCATE any lambda with direct comparisons:
+                    lambda x: "#27ae60" if x > daily_target else "#e74c3c"
+
+REPLACE WITH:
+                    lambda x: "#27ae60" if safe_numeric_local(x) > daily_target else "#e74c3c"
+
+
+FIX 6: Add Data Mapper functionality (at the end of main function)
+------------------------------------------------------------------------------
+LOCATE the end of the main() function, BEFORE:
+    # Footer
+    st.markdown("---")
+    st.caption("Built with Streamlit...")
+
+ADD:
+    
+    # Data Mapper and Quality
+    if st.session_state.get("sales_data") is not None and len(dashboard.ads_data_by_type) > 0:
+        with st.expander("🔗 Data Mapping - Quality and Integration"):
+            st.markdown("### Data Quality Report")
+            
+            mapper = DataMapper()
+            
+            # Validate Sales
+            st.markdown("#### 📊 Sales Data (Google Sheets)")
+            sales_quality = mapper.validate_data_quality(
+                st.session_state["sales_data"], 
+                'sales'
+            )
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Rows", sales_quality['row_count'])
+            col2.metric("Columns", sales_quality['column_count'])
+            col3.metric("Quality", "✅ Valid" if sales_quality['valid'] else "❌ Invalid")
+            
+            if sales_quality['warnings']:
+                st.warning("\\n".join(sales_quality['warnings']))
+            
+            # Validate Ads
+            if 'days' in dashboard.ads_data_by_type:
+                st.markdown("#### 📈 Ads Data (Meta)")
+                ads_quality = mapper.validate_data_quality(
+                    dashboard.ads_data_by_type['days'],
+                    'ads'
+                )
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Rows", ads_quality['row_count'])
+                col2.metric("Columns", ads_quality['column_count'])
+                col3.metric("Quality", "✅ Valid" if ads_quality['valid'] else "❌ Invalid")
+                
+                if ads_quality['warnings']:
+                    st.warning("\\n".join(ads_quality['warnings']))
+            
+            # Integration
+            st.markdown("### 🔄 Data Integration")
+            
+            if st.button("Run Advanced Integration"):
+                with st.spinner("Integrating data..."):
+                    integrated, stats = integrate_sales_and_ads_data(
+                        st.session_state["sales_data"],
+                        dashboard.ads_data_by_type.get('days'),
+                        dashboard.ads_data_by_type.get('days_placement_device'),
+                        dashboard.ads_data_by_type.get('days_time')
+                    )
+                    
+                    # Show statistics
+                    st.success("✅ Integration complete!")
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Total Shows", stats['total_shows'])
+                    col2.metric("Matched Shows", stats['matched_shows'])
+                    col3.metric("Unmatched Shows", stats['unmatched_shows'])
+                    if stats['total_shows'] > 0:
+                        col4.metric("Match Rate", f"{(stats['matched_shows']/stats['total_shows']*100):.1f}%")
+                    
+                    # Show preview
+                    st.markdown("#### Integrated Data Preview")
+                    st.dataframe(integrated.head(20), use_container_width=True)
+                    
+                    # Download option
+                    csv = integrated.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Integrated Data (CSV)",
+                        data=csv,
+                        file_name="integrated_sales_ads_data.csv",
+                        mime="text/csv"
+                    )
+
+
+SUMMARY OF CHANGES
+===================
+✅ Fixed ValueError error on line 823
+✅ Robust handling of None and NaN values in all metrics
+✅ New DataMapper class for Sales <-> Ads integration
+✅ Data quality validation
+✅ Advanced integration functionality
+✅ Integrated data export
+
+TESTING
+========
+1. Apply the fixes above
+2. Run the app: streamlit run optimized-ads-analyzer.py
+3. Load Sales and Ads data
+4. Check Show Health dashboard (should not error anymore)
+5. Test the new "Data Mapping" section at the end of the page
+
+FILES CREATED
+=================
+- data_mapper.py: Complete mapping and integration class
+- PATCH_INSTRUCTIONS.txt: This file with instructions
+
+========================================================
+For more information, see the DataMapper class
+documentation in data_mapper.py
+========================================================
+"""

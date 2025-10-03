@@ -1,0 +1,342 @@
+"""
+USAGE GUIDE - Data Mapper and Data Integration
+===============================================
+
+This guide explains how to correctly use Meta Ads CSVs
+and integrate them with Google Sheets sales data.
+
+1. META CSV FILE STRUCTURE
+===========================
+
+The system expects 3 CSV files exported from Meta Ads Manager:
+
+A) Days.csv (Main Report)
+--------------------------
+Required columns:
+- Reporting starts: Report start date
+- Reporting ends: Report end date
+- Campaign name: Campaign name (CRITICAL for matching)
+- Amount spent (USD): Amount spent
+- Impressions: Number of impressions
+- Link clicks: Link clicks
+- CTR (Link): Click-through rate
+- CPM (cost per 1,000 impressions) (USD): Cost per thousand impressions
+- Reach: Reach
+- Frequency: Frequency
+- Results: Results (conversions)
+- Cost per results: Cost per result
+
+Optional columns:
+- Ad set budget: Ad set budget
+- Campaign delivery: Delivery status
+- Attribution setting: Attribution setting
+
+B) Days + Placement + Device.csv
+---------------------------------
+Required columns:
+- Reporting starts: Start date
+- Reporting ends: End date
+- Campaign name: Campaign name
+- Platform: Platform (Facebook, Instagram, etc.)
+- Placement: Ad placement
+- Device platform: Device platform
+- Impression device: Impression device
+- Amount spent (USD): Amount spent
+- Impressions: Impressions
+- Link clicks: Clicks
+
+C) Days + Time.csv
+------------------
+Required columns:
+- Reporting starts: Start date
+- Reporting ends: End date
+- Campaign name: Campaign name
+- Time of day (viewer's time zone): Time of day
+- Amount spent (USD): Amount spent
+- Impressions: Impressions
+- Link clicks: Clicks
+
+
+2. CAMPAIGN NAMING (CRITICAL!)
+===============================
+
+For the system to correctly match ads with sales,
+the CAMPAIGN NAME must follow one of these patterns:
+
+Recommended Pattern:
+--------------------
+{CITY_CODE}_{DATE}_{SEQUENCE}
+
+Examples:
+- WDC_0927_S2    → Washington DC, show 0927, sequence 2
+- NYC_1015_S1    → New York City, show 1015, sequence 1
+- LAX_0801       → Los Angeles, show 0801, sequence 1 (implicit)
+
+Alternative Supported Patterns:
+-------------------------------
+1. US-{CITY}-Sales-{DATE}
+   Example: US-WDC-Sales-0927
+
+2. {CityName}_{DATE}
+   Example: WashingtonDC_0927
+
+3. Tour_{CityName}_{NUM}
+   Example: Tour_Washington_27
+
+4. {CITY}-Sales-{DATE}-{SEQUENCE}
+   Example: WDC-Sales-0927-S2
+
+
+3. SALES SPREADSHEET STRUCTURE (GOOGLE SHEETS)
+===============================================
+
+Required columns:
+- show_id: Unique show identifier (e.g., WDC_0927_S2)
+- city: City name
+- show_date: Show date
+- capacity: Total venue capacity
+- total_sold: Total tickets sold
+- remaining: Remaining tickets
+- sales_to_date: Total revenue to date
+- report_date: Report date
+
+Optional but recommended columns:
+- occupancy_rate: Occupancy rate (%)
+- avg_ticket_price: Average ticket price
+- today_sold: Sales today
+- avg_sales_last_7_days: Average sales last 7 days
+- days_to_show: Days until show
+- show_sequence: Show sequence number
+
+
+4. HOW MATCHING WORKS
+======================
+
+The system extracts show_id from the campaign name and searches
+in the sales spreadsheet. Matching is done automatically following
+this process:
+
+Step 1: show_id Extraction
+---------------------------
+The system analyzes the campaign name and tries to extract the show_id
+using the patterns defined in section 2.
+
+Example:
+Campaign name: "US-WDC-Sales-0927-Interest-12"
+Extracted Show ID: "WDC_0927"
+
+Step 2: Spreadsheet Search
+---------------------------
+The extracted show_id is searched in the 'show_id' column of the sales spreadsheet.
+
+Step 3: Data Aggregation
+-------------------------
+All ads with the same show_id are aggregated:
+- Total ad spend
+- Total impressions
+- Total clicks
+- Total conversions
+
+Step 4: Metrics Calculation
+----------------------------
+The system automatically calculates:
+- ROAS (Return on Ad Spend): revenue / ad_spend
+- CPA (Cost Per Acquisition): ad_spend / tickets_sold
+- Click-to-Purchase Rate: (tickets_sold / clicks) * 100
+
+
+5. COMPLETE USAGE EXAMPLE
+==========================
+
+File structure:
+---------------
+optimization_v4/
+├── optimized-ads-analyzer.py   # Main application
+├── data_mapper.py              # Mapping module
+├── public_sheets_connector.py  # Google Sheets connector
+├── Days.csv                    # Days report
+├── Days_Placement_Device.csv   # Placement + Device report
+└── Days_Time.csv               # Time report
+
+Step by step:
+-------------
+1. Export the 3 reports from Meta Ads Manager
+2. Ensure campaigns follow correct naming
+3. Run: streamlit run optimized-ads-analyzer.py
+4. In the sidebar, upload the 3 CSV files
+5. The system will process and match automatically
+6. Navigate to "Show Health" tab to see integrated data
+7. Use "Data Mapping" expander to:
+   - Validate data quality
+   - See matching statistics
+   - Export integrated data
+
+
+6. QUALITY VALIDATION
+======================
+
+The system automatically validates:
+
+✓ Required fields present
+✓ Correct data types
+✓ Valid numeric values
+✓ Dates in correct format
+✓ Missing values rate
+✓ Matching between Sales and Ads
+
+Common alerts:
+--------------
+⚠️ "Required field missing"
+   → Check if CSV has all necessary columns
+
+⚠️ "X% missing values"
+   → Some rows have incomplete data
+
+⚠️ "Unmatched Shows: X"
+   → Some campaigns were not associated with shows
+   → Check campaign naming
+
+
+7. CALCULATED METRICS
+======================
+
+After integration, the system calculates:
+
+Ad Performance:
+---------------
+- Total Ad Spend: Sum of spend per show
+- Total Impressions: Sum of impressions per show
+- Total Clicks: Sum of clicks per show
+- Average CPC: Average cost per click
+- Average CPM: Average cost per thousand impressions
+
+Sales Performance:
+------------------
+- Total Tickets Sold: Tickets sold
+- Revenue: Total revenue
+- Occupancy Rate: Occupancy rate
+- Average Ticket Price: Average price
+
+Integrated Metrics:
+-------------------
+- ROAS: Revenue / Ad Spend
+- CPA: Ad Spend / Tickets Sold
+- Click-to-Purchase Rate: (Tickets / Clicks) * 100
+- Ticket Cost: (Ad Budget) / Tickets Sold
+- Funnel Efficiency: (Purchases / Clicks) * 100
+
+
+8. DATA EXPORT
+==============
+
+After successful integration, you can:
+
+1. View preview of integrated data
+2. Download CSV with complete data
+3. Use data in external tools (Excel, Power BI, etc.)
+
+Exported CSV structure:
+-----------------------
+- All Sales fields
+- Ads aggregations per show
+- Calculated metrics (ROAS, CPA, etc.)
+- Additional dimensions (placement, time)
+
+
+9. TROUBLESHOOTING
+==================
+
+Problem: "No shows matched"
+---------------------------
+Solution:
+1. Check if campaign names follow the pattern
+2. Compare show_id in spreadsheet with extracted from campaigns
+3. Use create_campaign_name_from_show_id() function to 
+   generate correct names
+
+Problem: "Zero values in metrics"
+----------------------------------
+Solution:
+1. Check if CSVs have valid numeric data
+2. Ensure columns are in correct format
+3. Use quality validation to identify issues
+
+Problem: "Error loading CSV"
+-----------------------------
+Solution:
+1. Check encoding (should be UTF-8)
+2. Ensure no empty lines at the beginning
+3. Check if separators are commas (,)
+
+Problem: "ROAS too high or too low"
+------------------------------------
+Solution:
+1. Check if revenue is in USD
+2. Confirm ad_spend is correct
+3. Check for data duplication
+
+
+10. TIPS AND BEST PRACTICES
+============================
+
+✓ Always use consistent campaign naming
+✓ Export Meta data with same dates
+✓ Keep sales spreadsheet updated daily
+✓ Back up data before processing
+✓ Review quality report before trusting data
+✓ Use advanced integration for detailed analysis
+✓ Export integrated data for external analysis
+✓ Document any naming customization
+
+
+11. DATA MAPPER API
+====================
+
+For programmatic use:
+
+```python
+from data_mapper import DataMapper, integrate_sales_and_ads_data
+
+# Create instance
+mapper = DataMapper()
+
+# Normalize CSV
+df_normalized = mapper.normalize_csv_data(df, csv_type='days')
+
+# Extract show_id
+show_id = mapper.extract_show_id_from_campaign(
+    campaign_name="US-WDC-Sales-0927",
+    sales_df=sales_df
+)
+
+# Integrate data
+integrated_df, stats = integrate_sales_and_ads_data(
+    sales_df=sales_df,
+    ads_days_df=ads_days_df,
+    ads_placement_df=ads_placement_df,
+    ads_time_df=ads_time_df
+)
+
+# Validate quality
+quality_report = mapper.validate_data_quality(df, data_type='ads')
+```
+
+
+12. SUPPORT AND DOCUMENTATION
+==============================
+
+Reference files:
+- PATCH_INSTRUCTIONS.txt: Fix instructions
+- data_mapper.py: Mapper source code
+- apply_fixes.py: Automatic application script
+
+For more information:
+- Check inline documentation in code
+- Review comments in data_mapper.py
+- Use artifact with code examples
+
+================================================
+Last update: v4.1 - September 2025
+Developed by: Avner Gomes
+================================================
+"""
