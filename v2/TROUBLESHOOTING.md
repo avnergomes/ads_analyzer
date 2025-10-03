@@ -1,226 +1,85 @@
-# Ads Analyzer v2.0 - Guia de Troubleshooting
+# Ads Analyzer v2.0 – Troubleshooting Guide
 
-## 🔍 Problemas Comuns e Soluções
+Use this guide to resolve the most common issues encountered when loading or analysing data.
 
-### 1. Arquivo não é reconhecido
+## 🧪 Before you start
+- Confirm the app is running on Streamlit `1.39` or later.
+- Ensure `pandas`, `numpy`, `plotly`, and `requests` import without errors (run `python test_installation.py`).
+- Compare your files with the examples in the `sample/` directory if you need a reference structure.
 
-**Sintoma:** O sistema não identifica o tipo do arquivo CSV enviado.
+## ⚠️ Frequent upload issues
 
-**Possíveis causas:**
-- Arquivo não é um export válido do Meta Ads Manager
-- Colunas foram modificadas ou renomeadas manualmente
-- Arquivo está corrompido ou incompleto
+### 1. File type not recognised
+**Symptoms:** Warning stating that the file type could not be identified.
 
-**Soluções:**
-1. Verifique se o arquivo foi exportado diretamente do Meta Ads Manager
-2. Não modifique os nomes das colunas após o export
-3. Execute o validador: `python validate_csv.py seu_arquivo.csv`
-4. Compare com os arquivos de exemplo fornecidos
+**Resolution:**
+1. Verify that the file contains headers from one of the three supported Meta exports.
+2. Run `python validate_csv.py <file1> <file2> <file3>` to check the schema.
+3. Save the report again as CSV or Excel (UTF-8 encoding) and retry.
 
-### 2. Dados faltando após o upload
+### 2. Missing metrics after upload
+**Symptoms:** Columns such as spend or impressions appear blank.
 
-**Sintoma:** Algumas métricas aparecem como zero ou vazias.
+**Resolution:**
+- Confirm the column names in the export match the expected Meta headers.
+- Remove extra header rows that may have been added by manual editing.
+- Re-upload the original download from Meta Ads Manager without modifications.
 
-**Possíveis causas:**
-- Colunas não estão no formato esperado
-- Valores nulos no arquivo original
-- Tipo de dados incompatível
+### 3. Ticket CSV fails to parse
+**Symptoms:** Error message after uploading the ticket tracker.
 
-**Soluções:**
-1. Verifique se todas as colunas necessárias estão presentes
-2. Confira se os valores numéricos não contêm caracteres especiais
-3. Use o formato de data correto (YYYY-MM-DD)
-4. Remova linhas totalmente vazias do CSV
+**Resolution:**
+- Ensure the file ends with the `endRow` marker.
+- Remove blank columns or merged cells before exporting.
+- Confirm the revenue column includes a currency symbol that the parser understands.
 
-### 3. Erro ao fazer upload do arquivo
+### 4. Show not linked to campaigns
+**Symptoms:** The integrated view shows no match between ads and ticket records.
 
-**Sintoma:** Mensagem de erro ao tentar enviar o arquivo.
+**Resolution:**
+- Include the show ID (e.g., `WDC_0927`) in campaign or ad set names.
+- Avoid abbreviations that drop the city or date components.
+- Upload the latest ticket CSV to refresh the show lookup table.
 
-**Possíveis causas:**
-- Arquivo muito grande
-- Formato incompatível
-- Encoding incorreto
+### 5. Memory or performance concerns
+**Symptoms:** The browser becomes unresponsive when loading large CSVs.
 
-**Soluções:**
-1. Verifique o tamanho do arquivo (máximo recomendado: 100MB)
-2. Use apenas arquivos .csv, .xlsx ou .xls
-3. Salve o CSV com encoding UTF-8
-4. Divida arquivos muito grandes em períodos menores
+**Resolution:**
+- Split exports into smaller date ranges before downloading.
+- Close other heavy browser tabs while interacting with the dashboard.
+- Use the command-line validator to confirm there are no duplicate headers or corrupted rows.
 
-### 4. Métricas calculadas incorretas
+### 6. Charts fail to display
+**Symptoms:** Blank area where a Plotly chart should render.
 
-**Sintoma:** CTR, CPC ou CPM parecem incorretos.
+**Resolution:**
+- Confirm the dataset contains more than one row after filtering.
+- Check your browser console for blocked scripts (ad blockers can interfere with Plotly).
+- Refresh the page after clearing the Streamlit cache if you changed code locally.
 
-**Possíveis causas:**
-- Divisão por zero
-- Valores faltantes nas colunas base
-- Unidades monetárias diferentes
+## 🛠 Diagnostic tools
 
-**Soluções:**
-1. Verifique se as colunas spend, impressions e clicks têm valores
-2. Confirme que o spend está em USD
-3. Revise os cálculos:
-   - CTR = (clicks / impressions) × 100
-   - CPC = spend / clicks
-   - CPM = (spend / impressions) × 1000
-
-### 5. Show não é identificado nas ads
-
-**Sintoma:** A coluna "matched_show_id" aparece vazia.
-
-**Possíveis causas:**
-- Nome da campanha não segue o padrão
-- Cidade não corresponde aos dados de vendas
-- Show ID não está no nome da campanha
-
-**Soluções:**
-1. Use o formato de show ID na campanha: `CITY_MMDD` (ex: WDC_0927)
-2. Inclua o nome da cidade na campanha ou ad set
-3. Para múltiplos shows, use: `CITY_MMDD_S1`, `CITY_MMDD_S2`, etc.
-4. Verifique se a cidade corresponde aos dados do Google Sheets
-
-### 6. Erros de memória com arquivos grandes
-
-**Sintoma:** O aplicativo congela ou fecha ao processar arquivos.
-
-**Possíveis causas:**
-- Arquivo muito grande
-- Muitas linhas de dados
-- Memória insuficiente
-
-**Soluções:**
-1. Divida o período de análise em intervalos menores
-2. Feche outras abas do navegador
-3. Aumente a memória disponível para o Streamlit
-4. Use filtros no Meta antes de exportar
-
-### 7. Gráficos não aparecem
-
-**Sintoma:** As visualizações não são exibidas.
-
-**Possíveis causas:**
-- Dados insuficientes
-- Colunas necessárias faltando
-- Erro de JavaScript no navegador
-
-**Soluções:**
-1. Limpe o cache do navegador
-2. Tente outro navegador (Chrome recomendado)
-3. Verifique se há dados suficientes para o gráfico
-4. Recarregue a página (F5)
-
-### 8. Datas não aparecem corretamente
-
-**Sintoma:** Datas aparecem como texto ou erradas.
-
-**Possíveis causas:**
-- Formato de data não reconhecido
-- Timezone incorreto
-- Conversão de tipo falhou
-
-**Soluções:**
-1. Use o formato ISO: YYYY-MM-DD
-2. Evite formatos regionais (DD/MM/YYYY)
-3. Não use timestamps, apenas datas
-4. Verifique se a coluna é reconhecida como "date"
-
-## 🔧 Ferramentas de Diagnóstico
-
-### Validador de CSV
+### CSV validator
 ```bash
-python validate_csv.py arquivo.csv
+python validate_csv.py Days.csv "Days + Placement + Device.csv" "Days + Time.csv"
 ```
+- Detects dataset type
+- Counts rows
+- Confirms the presence of mandatory headers
 
-Mostra:
-- Tipo de arquivo identificado
-- Colunas encontradas vs esperadas
-- Colunas faltantes
-- Número de linhas
+### Manual column inspection
+Use this quick checklist before reporting a bug:
+- [ ] `date` column present (or a normalised equivalent)
+- [ ] `spend`, `impressions`, `clicks`, `results` columns populated
+- [ ] Campaign names include show identifiers
+- [ ] Ticket CSV stops at `endRow`
 
-### Logs do Sistema
-O Streamlit gera logs no terminal. Para ver mais detalhes:
-```bash
-streamlit run app.py --logger.level=debug
-```
+## 🧭 Reporting an issue
+When escalating a bug or support ticket, provide:
+- App version (`Ads Analyzer v2.0`)
+- Operating system and Python version
+- Steps to reproduce
+- Sample files (sanitised if necessary)
+- Screenshots of the warning or error message
 
-### Verificação Manual de Colunas
-```python
-import pandas as pd
-
-df = pd.read_csv('seu_arquivo.csv')
-print("Colunas:", df.columns.tolist())
-print("Tipos:", df.dtypes)
-print("Primeiras linhas:", df.head())
-```
-
-## 📋 Checklist de Verificação
-
-Antes de reportar um problema, verifique:
-
-- [ ] Arquivo é um export direto do Meta Ads Manager
-- [ ] Arquivo não foi editado manualmente
-- [ ] Todas as 3 types de arquivo foram enviados
-- [ ] Arquivos estão em formato CSV ou Excel
-- [ ] Encoding é UTF-8
-- [ ] Não há linhas completamente vazias
-- [ ] Valores numéricos não contêm texto
-- [ ] Datas estão no formato correto
-- [ ] Arquivo não está corrompido
-- [ ] Tamanho do arquivo é razoável (<100MB)
-
-## 🆘 Estrutura Esperada dos Arquivos
-
-### Days.csv (18 colunas)
-```
-Reporting starts, Reporting ends, Campaign name, Campaign delivery,
-Ad set budget, Ad set budget type, Amount spent (USD), Attribution setting,
-CPM (cost per 1,000 impressions) (USD), Impressions, Frequency, Reach,
-CTR (Link), Link clicks, Results, Result indicator, Cost per results, Ends
-```
-
-### Days Placement Device.csv (22 colunas)
-```
-[Todas as colunas do Days] + Platform, Placement, Device platform, 
-Impression device
-```
-
-### Days Time.csv (19 colunas)
-```
-[Todas as colunas do Days] + Time of day (viewer's time zone)
-```
-
-## 💡 Dicas de Prevenção
-
-1. **Sempre exporte diretamente do Meta**
-   - Não copie/cole em Excel
-   - Não edite manualmente
-   - Use "Export" > "CSV"
-
-2. **Mantenha os nomes originais**
-   - Não traduza colunas
-   - Não remova espaços ou parênteses
-   - Não reordene colunas
-
-3. **Teste com dados pequenos primeiro**
-   - Exporte 1 semana primeiro
-   - Verifique se funciona
-   - Depois exporte período completo
-
-4. **Use o validador**
-   - Execute antes de fazer upload
-   - Corrija problemas identificados
-   - Confirme que todos os 3 tipos são identificados
-
-## 📞 Suporte Adicional
-
-Se o problema persistir após seguir este guia:
-
-1. Execute o validador e salve o resultado
-2. Capture uma screenshot do erro
-3. Anote os passos que causaram o problema
-4. Verifique se há erros no console do navegador (F12)
-5. Entre em contato fornecendo essas informações
-
-## 🔄 Última Atualização
-
-Este guia foi atualizado para a versão 2.0 em Setembro de 2025.
+Keeping this information ready accelerates turnaround time and helps the development team reproduce the issue accurately.
