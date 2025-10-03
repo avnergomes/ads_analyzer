@@ -35,14 +35,14 @@ ads_analyzer/v2/
 
 ### `app.py`
 - Main Streamlit entry point.
-- Coordinates file uploads, state management, and interactive visualisations.
+- Coordinates Google Sheet sync, Meta file uploads, state management, and interactive visualisations.
 - Houses:
   - `AdsDataProcessor` – Normalises Meta exports, calculates missing KPIs, and enriches with ticket show IDs.
   - `IntegratedDashboard` – Renders KPI summaries, charts, and tables.
   - `FunnelSummary` – Lightweight data class for per-show funnel metrics.
 
 ### `public_sheets_connector.py`
-- Parses the ticket sales CSV exported from the shared sheet or the live Google Sheet.
+- Fetches the ticket sales feed directly from the shared Google Sheet (via the CSV export endpoint).
 - Stops reading at the `endRow` marker to avoid footer noise.
 - Normalises currencies and converts revenue into USD.
 - Adds pacing indicators: daily sales targets, seven-day rolling sales, and performance categories.
@@ -56,7 +56,7 @@ ads_analyzer/v2/
 
 ## 🧭 Data flow overview
 
-1. **Ticket sales upload** – Users provide the CSV export, which is parsed by `PublicSheetsConnector` and stored in `st.session_state`.
+1. **Ticket sales sync** – `PublicSheetsConnector` downloads the CSV export from Google Sheets, parses it, and stores the result in `st.session_state`.
 2. **Meta exports upload** – The `AdsDataProcessor` ingests the three Meta reports, harmonises the schema, and matches campaigns to shows when possible.
 3. **Dashboard rendering** – `IntegratedDashboard` compiles the processed data into KPIs, funnel charts, and pacing insights, displayed across the four tabs.
 

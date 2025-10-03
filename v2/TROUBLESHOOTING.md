@@ -7,7 +7,7 @@ Use this guide to resolve the most common issues encountered when loading or ana
 - Ensure `pandas`, `numpy`, `plotly`, and `requests` import without errors (run `python test_installation.py`).
 - Compare your files with the examples in the `sample/` directory if you need a reference structure.
 
-## ⚠️ Frequent upload issues
+## ⚠️ Frequent data issues
 
 ### 1. File type not recognised
 **Symptoms:** Warning stating that the file type could not be identified.
@@ -25,13 +25,13 @@ Use this guide to resolve the most common issues encountered when loading or ana
 - Remove extra header rows that may have been added by manual editing.
 - Re-upload the original download from Meta Ads Manager without modifications.
 
-### 3. Ticket CSV fails to parse
-**Symptoms:** Error message after uploading the ticket tracker.
+### 3. Ticket sheet sync fails
+**Symptoms:** Error message or warning after refreshing ticket sales data.
 
 **Resolution:**
-- Ensure the file ends with the `endRow` marker.
-- Remove blank columns or merged cells before exporting.
-- Confirm the revenue column includes a currency symbol that the parser understands.
+- Confirm the shared Google Sheet still exposes a public CSV export (no access restrictions added).
+- Ensure the sheet content ends with the `endRow` marker; rows beneath it are ignored.
+- Check that the revenue column includes a currency symbol recognised by the parser.
 
 ### 4. Show not linked to campaigns
 **Symptoms:** The integrated view shows no match between ads and ticket records.
@@ -39,7 +39,7 @@ Use this guide to resolve the most common issues encountered when loading or ana
 **Resolution:**
 - Include the show ID (e.g., `WDC_0927`) in campaign or ad set names.
 - Avoid abbreviations that drop the city or date components.
-- Upload the latest ticket CSV to refresh the show lookup table.
+- Click **Refresh ticket sales data** to pull the latest sheet snapshot and update the show lookup table.
 
 ### 5. Memory or performance concerns
 **Symptoms:** The browser becomes unresponsive when loading large CSVs.
@@ -72,7 +72,7 @@ Use this quick checklist before reporting a bug:
 - [ ] `date` column present (or a normalised equivalent)
 - [ ] `spend`, `impressions`, `clicks`, `results` columns populated
 - [ ] Campaign names include show identifiers
-- [ ] Ticket CSV stops at `endRow`
+- [ ] Ticket sheet stops at `endRow`
 
 ## 🧭 Reporting an issue
 When escalating a bug or support ticket, provide:

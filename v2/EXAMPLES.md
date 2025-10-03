@@ -64,5 +64,5 @@ This guide outlines practical ways to explore the dashboards and interrogate you
 
 ## 🎓 Expert tips
 - Maintain consistent naming conventions (`CITY_MMDD` or `CITY_MMDD_S#`) across campaigns and shows.
-- Refresh uploads after major sales pushes or campaign changes to keep dashboards current.
+- Refresh the Google Sheet sync after major sales pushes or campaign changes to keep dashboards current.
 - Use the download buttons in the Raw Data tab as snapshots for stakeholder reports or further modelling.

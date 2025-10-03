@@ -131,23 +131,6 @@ class PublicSheetsConnector:
             logger.error("Failed to load sheet: %s", e)
             return None
 
-    def load_from_uploaded_file(self, uploaded_file) -> Optional[pd.DataFrame]:
-        """Parse a Streamlit uploaded file containing the ticket sheet export."""
-        if uploaded_file is None:
-            return None
-
-        try:
-            file_bytes = uploaded_file.getvalue()
-            if not file_bytes:
-                logger.warning("Uploaded ticket sales file is empty: %s", uploaded_file.name)
-                return None
-
-            return self.load_data(file_bytes)
-
-        except Exception as exc:
-            logger.error("Failed to parse uploaded ticket sheet %s: %s", uploaded_file.name, exc)
-            return None
-    
     def _analyze_rows_minutely(self, raw_data):
         """Iterate through raw rows and keep only valid show entries."""
         processed_shows = []

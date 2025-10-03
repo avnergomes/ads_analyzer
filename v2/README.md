@@ -5,7 +5,7 @@ Ads Analyzer v2.0 is a Streamlit application that combines Meta Ads Manager expo
 ## ✨ Highlights in this release
 
 - **Reliable inputs** – Normalises column names across different Meta exports, fills missing KPIs, and validates funnel metrics automatically.
-- **Ticket sales uploader** – Accepts the daily ticket report exported from the shared spreadsheet (the file ends with the `endRow` marker) and converts all revenue into USD.
+- **Google Sheet sync** – Pulls the daily ticket tracker directly from the shared spreadsheet (the feed ends with the `endRow` marker) and converts all revenue into USD.
 - **Currency-aware analytics** – Detects the currency prefix in the revenue column and applies static USD conversion factors for unified reporting.
 - **Show-level snapshots** – Collapses the ticket feed to the latest entry per show to avoid double counting capacity, tickets sold, or revenue.
 - **Integrated dashboards** – Presents side-by-side tabs for ticket performance, advertising activity, and cross-channel analysis.
@@ -14,7 +14,7 @@ Ads Analyzer v2.0 is a Streamlit application that combines Meta Ads Manager expo
 
 | Data source | Format | Notes |
 |-------------|--------|-------|
-| Ticket sales tracker | CSV export downloaded from the shared sheet | Upload the file through the sidebar. The parser stops at the `endRow` marker automatically. |
+| Ticket sales tracker | Google Sheet (CSV export endpoint) | Use the **Refresh ticket sales data** button to pull the latest snapshot. The parser stops at the `endRow` marker automatically. |
 | Meta Ads Manager | CSV or Excel (`.csv`, `.xlsx`, `.xls`) | Upload the "Days", "Days + Placement + Device", and "Days + Time" reports. |
 
 ## 📊 Dashboards
@@ -47,7 +47,7 @@ ads_analyzer/v2/
 
 1. Install dependencies: `pip install -r requirements.txt`
 2. Launch the app: `streamlit run app.py`
-3. Upload the ticket sales CSV in the sidebar under "Ticket sales data".
+3. Click **Refresh ticket sales data** in the sidebar to download the latest snapshot from Google Sheets.
 4. Upload the three Meta exports under "Upload Meta ad exports".
 5. Explore the four dashboard tabs for insights.
 
@@ -59,7 +59,7 @@ The following guides live in the `v2` directory:
 - **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)** – File-by-file breakdown of the application.
 - **[INDEX.md](INDEX.md)** – Table of contents for every guide.
 - **[EXAMPLES.md](EXAMPLES.md)** – Step-by-step analytical workflows.
-- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** – Resolution paths for common upload and parsing issues.
+- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** – Resolution paths for common data sync and parsing issues.
 - **[DEPLOYMENT.md](DEPLOYMENT.md)** – Instructions for hosting on Streamlit Cloud, Docker, or a VPS.
 - **[CHANGELOG.md](CHANGELOG.md)** – Release history.
 

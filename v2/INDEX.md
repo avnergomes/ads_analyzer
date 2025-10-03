@@ -5,9 +5,9 @@ Welcome to the complete documentation set for Ads Analyzer v2.0. Use this index 
 ## 🚀 Getting started
 
 ### For new users
-1. **[QUICKSTART.md](QUICKSTART.md)** ⚡ – Configure the environment and load your first files.
+1. **[QUICKSTART.md](QUICKSTART.md)** ⚡ – Configure the environment and load your first datasets.
    - Installation checklist
-   - Upload walkthrough
+   - Data loading walkthrough
    - Tips for first-time analysts
 
 2. **[README.md](README.md)** 📖 – Full project overview.
@@ -31,7 +31,7 @@ Welcome to the complete documentation set for Ads Analyzer v2.0. Use this index 
 ## 📖 Usage guides
 
 ### Core workflows
-- **[QUICKSTART.md](QUICKSTART.md)** – Install, upload, and navigate the dashboards.
+- **[QUICKSTART.md](QUICKSTART.md)** – Install, load data, and navigate the dashboards.
 
 ### Advanced scenarios
 - **[EXAMPLES.md](EXAMPLES.md)** 📊 – Practical walkthroughs.
@@ -48,7 +48,7 @@ Welcome to the complete documentation set for Ads Analyzer v2.0. Use this index 
 
 ### Diagnostic tools
 - **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** 🐛 – Comprehensive issue resolution.
-  - Common upload errors
+  - Common data sync errors
   - Data completeness checks
   - Expected schema references
   - Performance tuning tips

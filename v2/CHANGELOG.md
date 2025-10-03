@@ -1,5 +1,10 @@
 # Ads Analyzer – Changelog
 
+## v2.0.2 – Google Sheet ticket sync
+- Removed the ticket CSV upload workflow and now rely exclusively on the shared Google Sheet export.
+- Added a sidebar refresh action and status messaging for the Google Sheet sync.
+- Updated documentation to reflect the Google Sheet data source requirement.
+
 ## v2.0.1 – Ticket upload and English documentation
 - Added support for uploading the ticket sales CSV through the Streamlit sidebar.
 - Updated the ticket parser to accept uploaded files in addition to the live Google Sheet.

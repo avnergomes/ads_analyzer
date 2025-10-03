@@ -45,8 +45,8 @@ The browser opens at `http://localhost:8501` by default.
 
 ## 🎯 First run checklist
 
-### Step 1 – Export the ticket report
-Download the daily ticket tracker as a CSV file. The file should end with the `endRow` marker.
+### Step 1 – Access the ticket report
+Ensure you have access to the shared Google Sheet that powers the ticket tracker. The app automatically downloads the CSV export (which ends with the `endRow` marker).
 
 ### Step 2 – Export Meta reports
 From Meta Ads Manager export three datasets:
@@ -56,8 +56,8 @@ From Meta Ads Manager export three datasets:
 
 CSV exports are preferred, but Excel files are also supported.
 
-### Step 3 – Upload files in the sidebar
-1. Under **Ticket sales data**, upload the ticket tracker CSV.
+### Step 3 – Load data in the sidebar
+1. Click **Refresh ticket sales data** to sync the latest snapshot from Google Sheets.
 2. Under **Upload Meta ad exports**, upload the three Meta reports (CSV or Excel).
 3. Wait for the processing spinner to finish.
 
@@ -85,5 +85,5 @@ The script confirms:
 
 - **Campaign naming**: Include the show ID in campaign or ad set names so the app can auto-match campaigns to shows (e.g., `WDC_0927`, `NYC_1015_S2`).
 - **Budget planning**: Use the Show Health panel to set a per-show budget target; the dashboard highlights pace versus the goal.
-- **Currency sanity check**: If the ticket report mixes currencies, confirm the summary numbers reflect USD after upload.
-- **Data refresh**: Uploading a new ticket CSV replaces the previous snapshot—use consistent filenames to keep track of versions.
+- **Currency sanity check**: If the ticket report mixes currencies, confirm the summary numbers reflect USD after a refresh.
+- **Data refresh**: Click **Refresh ticket sales data** after major sales pushes or sheet updates to pull the newest snapshot.

@@ -68,7 +68,7 @@ This guide outlines options for hosting Ads Analyzer in production environments.
 
 ## 📈 Monitoring and maintenance
 - Enable Streamlit logging (`streamlit run app.py --logger.level=info`) to capture usage metrics.
-- Schedule regular backups of uploaded files if you persist them on disk.
+- Schedule regular backups of uploaded Meta exports if you persist them on disk.
 - Update dependencies quarterly and rerun regression tests (`python -m py_compile v2/public_sheets_connector.py v2/app.py`).
 
 ## 🆘 Deployment troubleshooting

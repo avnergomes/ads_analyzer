@@ -7,7 +7,7 @@ import io
 import re
 import warnings
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -1122,7 +1122,7 @@ class IntegratedDashboard:
                 csv = sales_df.to_csv(index=False)
                 st.download_button("Download ticket sales CSV", csv, "sales_data.csv", "text/csv")
             else:
-                st.info("Upload the ticket sales sheet to view details.")
+                st.info("Ticket sales data is loaded automatically from the Google Sheet once available.")
 
         with ads_col:
             st.subheader("📣 Advertising Data")
@@ -1148,7 +1148,7 @@ def main() -> None:
     st.title("🎭 Ads Analyzer v2.0")
     st.caption(
         "Integrated performance insights across Meta ads and live ticket sales. "
-        "Upload the Meta report exports and the ticket sales CSV to unlock the full analysis."
+        "Upload the Meta report exports and refresh the Google Sheet sync to unlock the full analysis."
     )
 
     st.sidebar.header("Configuration")
@@ -1161,46 +1161,58 @@ def main() -> None:
     dashboard = IntegratedDashboard()
 
     st.sidebar.subheader("Ticket sales data")
-    sales_upload = st.sidebar.file_uploader(
-        "Upload ticket sales export",
-        type=["csv"],
-        accept_multiple_files=False,
-        help="Upload the CSV export from the ticket tracker. The parser stops at the `endRow` marker automatically.",
-    )
 
     if "sales_data" not in st.session_state:
         st.session_state["sales_data"] = None
-        st.session_state["sales_filename"] = None
+        st.session_state["sales_last_refresh"] = None
+        st.session_state["sales_error"] = None
 
-    if sales_upload is not None:
-        with st.spinner("Processing ticket sales data..."):
-            parsed_sales = sheets_connector.load_from_uploaded_file(sales_upload)
+    refresh_clicked = st.sidebar.button(
+        "Refresh ticket sales data",
+        help="Pull the latest snapshot directly from the shared Google Sheet.",
+    )
 
-        if parsed_sales is not None and not parsed_sales.empty:
-            st.session_state["sales_data"] = parsed_sales
-            st.session_state["sales_filename"] = sales_upload.name
-            summary = sheets_connector.get_data_summary(parsed_sales)
+    should_load_sales = (
+        st.session_state["sales_data"] is None
+        and st.session_state["sales_error"] is None
+    ) or refresh_clicked
+
+    if should_load_sales:
+        with st.spinner("Loading ticket sales data from Google Sheets..."):
+            fetched_sales = sheets_connector.load_data()
+
+        if fetched_sales is not None and not fetched_sales.empty:
+            st.session_state["sales_data"] = fetched_sales
+            st.session_state["sales_last_refresh"] = datetime.utcnow()
+            st.session_state["sales_error"] = None
+            summary = sheets_connector.get_data_summary(fetched_sales)
             loaded_shows = summary.get("total_shows", 0)
             st.sidebar.success(
-                f"Loaded {loaded_shows} show report{'s' if loaded_shows != 1 else ''} from {sales_upload.name}"
+                f"Loaded {loaded_shows} show report{'s' if loaded_shows != 1 else ''} from Google Sheets."
             )
         else:
-            st.sidebar.error(
-                "Could not parse the uploaded ticket sales file. Please verify the format and try again."
-            )
-
-    if st.sidebar.button("Clear ticket sales data"):
-        st.session_state["sales_data"] = None
-        st.session_state["sales_filename"] = None
+            st.session_state["sales_data"] = None
+            st.session_state["sales_error"] = "Ticket sales data is unavailable."
+            st.sidebar.error("Could not load ticket sales data from the Google Sheet. Please try again later.")
 
     sales_df = st.session_state.get("sales_data")
+    sales_error = st.session_state.get("sales_error")
 
-    if sales_df is None or sales_df.empty:
-        st.sidebar.info("Upload the ticket sales CSV to activate sales insights.")
-    else:
+    if sales_df is not None and not sales_df.empty:
         summary = sheets_connector.get_data_summary(sales_df)
         st.sidebar.metric("Shows tracked", summary.get("total_shows", 0))
         st.sidebar.metric("Tickets sold", f"{int(summary.get('total_sold', 0)):,}")
+        last_refresh = st.session_state.get("sales_last_refresh")
+        if last_refresh is not None:
+            st.sidebar.caption(
+                f"Last refreshed: {last_refresh.strftime('%Y-%m-%d %H:%M UTC')}"
+            )
+    elif sales_error:
+        st.sidebar.warning(
+            "Ticket sales data is unavailable. Refresh once the Google Sheet is updated."
+        )
+    else:
+        st.sidebar.info("Loading ticket sales data from Google Sheets...")
 
     dashboard.sales_data = sales_df
 
