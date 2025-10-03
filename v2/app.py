@@ -800,7 +800,7 @@ class IntegratedDashboard:
         timeline = self._build_sales_timeline(df)
         if not timeline.empty:
             st.markdown("**Ticket Sales over Time**")
-            fig = go.Figure()
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
             fig.add_trace(
                 go.Bar(
                     x=timeline["report_date"],
@@ -808,7 +808,8 @@ class IntegratedDashboard:
                     name="Daily Tickets Sold",
                     marker_color="#ff7f0e",
                     hovertemplate="%{x|%b %d, %Y}<br>Daily sold: %{y:,.0f}<extra></extra>",
-                )
+                ),
+                secondary_y=False,
             )
             fig.add_trace(
                 go.Scatter(
@@ -818,15 +819,17 @@ class IntegratedDashboard:
                     name="Total Tickets Sold",
                     line=dict(color="#1f77b4", width=2),
                     hovertemplate="%{x|%b %d, %Y}<br>Total sold: %{y:,.0f}<extra></extra>",
-                )
+                ),
+                secondary_y=True,
             )
             fig.update_layout(
                 height=420,
                 xaxis_title="Report Date",
-                yaxis_title="Tickets",
                 hovermode="x unified",
                 xaxis=dict(type="date"),
             )
+            fig.update_yaxes(title_text="Daily Tickets Sold", secondary_y=False)
+            fig.update_yaxes(title_text="Cumulative Tickets Sold", secondary_y=True)
             st.plotly_chart(fig, use_container_width=True)
         elif "show_date" in df.columns and df["show_date"].notna().any():
             st.markdown("**Ticket Sales over Time**")
@@ -838,7 +841,7 @@ class IntegratedDashboard:
             )
             daily["cumulative_total"] = daily["total_sold"].cumsum()
 
-            fig = go.Figure()
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
             fig.add_trace(
                 go.Bar(
                     x=daily["show_date"],
@@ -846,7 +849,8 @@ class IntegratedDashboard:
                     name="Daily Tickets Sold",
                     marker_color="#ff7f0e",
                     hovertemplate="%{x|%b %d, %Y}<br>Daily sold: %{y:,.0f}<extra></extra>",
-                )
+                ),
+                secondary_y=False,
             )
             fig.add_trace(
                 go.Scatter(
@@ -856,15 +860,17 @@ class IntegratedDashboard:
                     name="Total Tickets Sold",
                     line=dict(color="#1f77b4", width=2),
                     hovertemplate="%{x|%b %d, %Y}<br>Total sold: %{y:,.0f}<extra></extra>",
-                )
+                ),
+                secondary_y=True,
             )
             fig.update_layout(
                 height=420,
                 xaxis_title="Show Date",
-                yaxis_title="Tickets",
                 hovermode="x unified",
                 xaxis=dict(type="date"),
             )
+            fig.update_yaxes(title_text="Daily Tickets Sold", secondary_y=False)
+            fig.update_yaxes(title_text="Cumulative Tickets Sold", secondary_y=True)
             st.plotly_chart(fig, use_container_width=True)
 
     # -------------------------- Show Health ------------------------------ #
@@ -1065,7 +1071,11 @@ class IntegratedDashboard:
         col3.metric("Spend", f"${total_spend:,.2f}")
         col4.metric("Purchases", f"{int(total_conversions):,}")
 
-    def create_ads_charts(self, df: pd.DataFrame) -> None:
+    def create_ads_charts(
+        self,
+        df: pd.DataFrame,
+        placement_df: Optional[pd.DataFrame] = None,
+    ) -> None:
         if df is None or df.empty:
             return
 
@@ -1126,6 +1136,149 @@ class IntegratedDashboard:
                 )
                 fig.update_layout(height=500, showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("**Placement and Device Performance**")
+        if placement_df is None or placement_df.empty:
+            st.info("Upload the placement and device breakdown to explore channel performance.")
+            return
+
+        breakdown = placement_df.copy()
+        numeric_columns = ["impressions", "clicks", "spend", "purchases"]
+        for column in numeric_columns:
+            if column in breakdown.columns:
+                breakdown[column] = pd.to_numeric(breakdown[column], errors="coerce").fillna(0)
+            else:
+                breakdown[column] = 0
+
+        placement_column = None
+        for candidate in ["placement", "platform"]:
+            if candidate in breakdown.columns:
+                placement_column = candidate
+                break
+
+        device_column = None
+        for candidate in ["device_platform", "impression_device"]:
+            if candidate in breakdown.columns:
+                device_column = candidate
+                break
+
+        cols = st.columns(2)
+
+        if placement_column:
+            placement_perf = (
+                breakdown.groupby(placement_column)
+                .agg(
+                    {
+                        "impressions": "sum",
+                        "spend": "sum",
+                        "clicks": "sum",
+                        "purchases": "sum",
+                    }
+                )
+                .reset_index()
+            )
+            placement_perf["cpa"] = np.where(
+                placement_perf["purchases"] > 0,
+                placement_perf["spend"] / placement_perf["purchases"],
+                np.nan,
+            )
+            placement_perf["ctr"] = np.where(
+                placement_perf["impressions"] > 0,
+                placement_perf["clicks"] / placement_perf["impressions"],
+                0,
+            )
+            placement_perf = placement_perf.sort_values("purchases", ascending=False)
+
+            with cols[0]:
+                st.markdown("Top placements by tickets sold")
+                fig = px.bar(
+                    placement_perf.head(10),
+                    x="purchases",
+                    y=placement_column,
+                    orientation="h",
+                    color="cpa",
+                    color_continuous_scale="RdYlGn",
+                    labels={
+                        "purchases": "Tickets Sold",
+                        placement_column: "Placement",
+                        "cpa": "Cost per Ticket",
+                    },
+                    hover_data={
+                        "spend": ":$.2f",
+                        "clicks": ":,.0f",
+                        "ctr": ":.2%",
+                        "cpa": ":$.2f",
+                    },
+                )
+                fig.update_layout(height=420)
+                st.plotly_chart(fig, use_container_width=True)
+
+                top_row = placement_perf.iloc[0] if not placement_perf.empty else None
+                if top_row is not None:
+                    st.caption(
+                        f"Best placement: {top_row[placement_column]} — {int(round(top_row['purchases'])):,} tickets"
+                    )
+        else:
+            with cols[0]:
+                st.info("Placement details were not found in the uploaded file.")
+
+        if device_column:
+            device_perf = (
+                breakdown.groupby(device_column)
+                .agg(
+                    {
+                        "impressions": "sum",
+                        "spend": "sum",
+                        "clicks": "sum",
+                        "purchases": "sum",
+                    }
+                )
+                .reset_index()
+            )
+            device_perf["ctr"] = np.where(
+                device_perf["impressions"] > 0,
+                device_perf["clicks"] / device_perf["impressions"],
+                0,
+            )
+            device_perf["cpa"] = np.where(
+                device_perf["purchases"] > 0,
+                device_perf["spend"] / device_perf["purchases"],
+                np.nan,
+            )
+            device_perf = device_perf.sort_values("purchases", ascending=False)
+
+            with cols[1]:
+                st.markdown("Top devices by tickets sold")
+                fig = px.bar(
+                    device_perf.head(10),
+                    x="purchases",
+                    y=device_column,
+                    orientation="h",
+                    color="cpa",
+                    color_continuous_scale="RdYlGn",
+                    labels={
+                        "purchases": "Tickets Sold",
+                        device_column: "Device",
+                        "cpa": "Cost per Ticket",
+                    },
+                    hover_data={
+                        "spend": ":$.2f",
+                        "clicks": ":,.0f",
+                        "ctr": ":.2%",
+                        "cpa": ":$.2f",
+                    },
+                )
+                fig.update_layout(height=420)
+                st.plotly_chart(fig, use_container_width=True)
+
+                top_row = device_perf.iloc[0] if not device_perf.empty else None
+                if top_row is not None:
+                    st.caption(
+                        f"Best device: {top_row[device_column]} — {int(round(top_row['purchases'])):,} tickets"
+                    )
+        else:
+            with cols[1]:
+                st.info("Device breakdown columns were not detected in the upload.")
 
     # ------------------------ Integrated Analysis ------------------------ #
     def create_integration_analysis(
@@ -1380,9 +1533,14 @@ def main() -> None:
 
     with tab_ads:
         days_df = dashboard.ads_data_by_type.get("days") if dashboard.ads_data_by_type else None
+        placement_df = (
+            dashboard.ads_data_by_type.get("days_placement_device")
+            if dashboard.ads_data_by_type
+            else None
+        )
         dashboard.create_ads_overview(days_df)
         st.markdown("---")
-        dashboard.create_ads_charts(days_df)
+        dashboard.create_ads_charts(days_df, placement_df)
 
     with tab_integration:
         days_df = dashboard.ads_data_by_type.get("days") if dashboard.ads_data_by_type else None
