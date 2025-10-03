@@ -617,6 +617,22 @@ class IntegratedDashboard:
         self.ads_data_by_type: Dict[str, pd.DataFrame] = {}
         self.funnel_summary: Dict[str, FunnelSummary] = {}
 
+    @staticmethod
+    def _latest_per_show(df: pd.DataFrame) -> pd.DataFrame:
+        """Return the most recent record for each show ID."""
+        if df is None or df.empty:
+            return df
+
+        sort_columns = ["show_id"]
+        if "report_date" in df.columns:
+            sort_columns.append("report_date")
+
+        snapshot = (
+            df.sort_values(sort_columns)
+            .drop_duplicates(subset="show_id", keep="last")
+        )
+        return snapshot
+
     # ----------------------------- Sales --------------------------------- #
     def create_sales_overview(self, df: pd.DataFrame) -> None:
         if df is None or df.empty:
@@ -625,23 +641,29 @@ class IntegratedDashboard:
 
         st.subheader("🎫 Ticket Sales Overview")
 
-        total_shows = len(df["show_id"].unique())
-        total_capacity = df["capacity"].sum()
-        total_sold = df["total_sold"].sum()
-        total_revenue = df["sales_to_date"].sum()
-        avg_occupancy = df["occupancy_rate"].mean()
-        cities_count = df["city"].nunique()
-        sold_out_shows = (df["occupancy_rate"] >= 99).sum()
+        snapshot = self._latest_per_show(df)
+
+        total_shows = len(snapshot["show_id"].unique())
+        total_capacity = float(snapshot["capacity"].fillna(0).sum())
+        total_sold = float(snapshot["total_sold"].fillna(0).sum())
+        total_revenue = float(snapshot["sales_to_date"].fillna(0).sum())
+        avg_occupancy = snapshot["occupancy_rate"].dropna().mean()
+        avg_ticket_price = snapshot["avg_ticket_price"].dropna().mean()
+        cities_count = snapshot["city"].nunique()
+        sold_out_shows = snapshot["occupancy_rate"].fillna(0).ge(99).sum()
+
+        avg_occupancy_value = float(avg_occupancy) if pd.notna(avg_occupancy) else 0.0
+        avg_ticket_price_value = float(avg_ticket_price) if pd.notna(avg_ticket_price) else 0.0
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Shows", f"{total_shows:,}")
-        col2.metric("Total Capacity", f"{int(total_capacity):,}")
-        col3.metric("Tickets Sold", f"{int(total_sold):,}")
+        col2.metric("Total Capacity", f"{int(round(total_capacity)):,}")
+        col3.metric("Tickets Sold", f"{int(round(total_sold)):,}")
         col4.metric("Revenue to Date", f"${total_revenue:,.0f}")
 
         col5, col6, col7, col8 = st.columns(4)
-        col5.metric("Average Occupancy", f"{avg_occupancy:.1f}%")
-        col6.metric("Average Ticket Price", f"${df['avg_ticket_price'].mean():,.0f}")
+        col5.metric("Average Occupancy", f"{avg_occupancy_value:.1f}%")
+        col6.metric("Average Ticket Price", f"${avg_ticket_price_value:,.0f}")
         col7.metric("Cities", f"{cities_count}")
         col8.metric("Sold Out", f"{sold_out_shows}")
 
@@ -650,12 +672,14 @@ class IntegratedDashboard:
             return
 
         col1, col2 = st.columns(2)
-        
+
+        snapshot = self._latest_per_show(df)
+
         with col1:
             st.markdown("**Top Cities by Tickets Sold**")
-            if {"city", "total_sold", "capacity"}.issubset(df.columns):
+            if {"city", "total_sold", "capacity"}.issubset(snapshot.columns):
                 city_performance = (
-                    df.groupby("city")
+                    snapshot.groupby("city")
                     .agg({"total_sold": "sum", "capacity": "sum", "sales_to_date": "sum"})
                     .reset_index()
                 )
@@ -678,9 +702,9 @@ class IntegratedDashboard:
 
         with col2:
             st.markdown("**Occupancy Distribution**")
-            if "occupancy_rate" in df.columns:
+            if "occupancy_rate" in snapshot.columns:
                 fig = px.histogram(
-                    df,
+                    snapshot,
                     x="occupancy_rate",
                     nbins=20,
                     labels={"occupancy_rate": "Occupancy %"},
@@ -1098,7 +1122,7 @@ class IntegratedDashboard:
                 csv = sales_df.to_csv(index=False)
                 st.download_button("Download ticket sales CSV", csv, "sales_data.csv", "text/csv")
             else:
-                st.info("Load the ticket sales sheet to view details.")
+                st.info("Upload the ticket sales sheet to view details.")
 
         with ads_col:
             st.subheader("📣 Advertising Data")
@@ -1121,10 +1145,10 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
 
-    st.title("📊 Flai Data's Ads Analyzer | v2.0")
+    st.title("🎭 Ads Analyzer v2.0")
     st.caption(
         "Integrated performance insights across Meta ads and live ticket sales. "
-        "Upload the Meta report exports (Days, Days + Placement + Device, Days + Time) to unlock the full analysis."
+        "Upload the Meta report exports and the ticket sales CSV to unlock the full analysis."
     )
 
     st.sidebar.header("Configuration")
@@ -1136,22 +1160,48 @@ def main() -> None:
     ads_processor = AdsDataProcessor()
     dashboard = IntegratedDashboard()
 
-    # Load sales data
-    if "sales_data" not in st.session_state:
-        with st.spinner("Loading ticket sales from Google Sheets..."):
-            sales_data = sheets_connector.load_data()
-            st.session_state["sales_data"] = sales_data
-            if sales_data is not None:
-                summary = sheets_connector.get_data_summary(sales_data)
-                st.sidebar.success(f"Loaded {summary.get('total_shows', 0)} show reports")
-            else:
-                st.sidebar.error("Failed to load the public sheet. Please refresh the page.")
+    st.sidebar.subheader("Ticket sales data")
+    sales_upload = st.sidebar.file_uploader(
+        "Upload ticket sales export",
+        type=["csv"],
+        accept_multiple_files=False,
+        help="Upload the CSV export from the ticket tracker. The parser stops at the `endRow` marker automatically.",
+    )
 
-    if st.sidebar.button("Refresh ticket sales"):
-        with st.spinner("Refreshing ticket sales data..."):
-            st.session_state["sales_data"] = sheets_connector.load_data()
+    if "sales_data" not in st.session_state:
+        st.session_state["sales_data"] = None
+        st.session_state["sales_filename"] = None
+
+    if sales_upload is not None:
+        with st.spinner("Processing ticket sales data..."):
+            parsed_sales = sheets_connector.load_from_uploaded_file(sales_upload)
+
+        if parsed_sales is not None and not parsed_sales.empty:
+            st.session_state["sales_data"] = parsed_sales
+            st.session_state["sales_filename"] = sales_upload.name
+            summary = sheets_connector.get_data_summary(parsed_sales)
+            loaded_shows = summary.get("total_shows", 0)
+            st.sidebar.success(
+                f"Loaded {loaded_shows} show report{'s' if loaded_shows != 1 else ''} from {sales_upload.name}"
+            )
+        else:
+            st.sidebar.error(
+                "Could not parse the uploaded ticket sales file. Please verify the format and try again."
+            )
+
+    if st.sidebar.button("Clear ticket sales data"):
+        st.session_state["sales_data"] = None
+        st.session_state["sales_filename"] = None
 
     sales_df = st.session_state.get("sales_data")
+
+    if sales_df is None or sales_df.empty:
+        st.sidebar.info("Upload the ticket sales CSV to activate sales insights.")
+    else:
+        summary = sheets_connector.get_data_summary(sales_df)
+        st.sidebar.metric("Shows tracked", summary.get("total_shows", 0))
+        st.sidebar.metric("Tickets sold", f"{int(summary.get('total_sold', 0)):,}")
+
     dashboard.sales_data = sales_df
 
     # File uploader
@@ -1206,7 +1256,6 @@ def main() -> None:
         dashboard.render_raw_tables(sales_df, dashboard.ads_data_by_type)
 
     st.markdown("---")
-    st.caption("Built for Flai Data using Streamlit · Ads Analyzer v2.0 | **© 2025 Avner Gomes**")
 
 
 if __name__ == "__main__":
