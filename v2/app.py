@@ -1217,12 +1217,92 @@ class IntegratedDashboard:
             return
 
         breakdown = placement_df.copy()
-        numeric_columns = ["impressions", "clicks", "spend", "purchases"]
+        numeric_columns = [
+            "impressions",
+            "clicks",
+            "spend",
+            "purchases",
+            "add_to_cart",
+            "results",
+        ]
         for column in numeric_columns:
             if column in breakdown.columns:
                 breakdown[column] = pd.to_numeric(breakdown[column], errors="coerce").fillna(0)
             else:
                 breakdown[column] = 0
+
+        def select_primary_metric(source: pd.DataFrame) -> Tuple[str, str]:
+            """Choose the best available performance metric for visualisation."""
+
+            indicator_labels = {
+                "actions:landing_page_view": "Landing Page Views",
+                "actions:link_click": "Link Clicks",
+                "actions:offsite_conversion.fb_pixel_add_to_cart": "Add to Cart",
+                "actions:offsite_conversion.fb_pixel_purchase": "Tickets Sold",
+                "actions:onsite_conversion.lead_grouped": "Leads",
+                "reach": "Reach",
+            }
+
+            candidates = [
+                ("purchases", "Tickets Sold"),
+                ("add_to_cart", "Add to Cart"),
+            ]
+
+            for column, label in candidates:
+                if column in source.columns and float(source[column].fillna(0).sum()) > 0:
+                    return column, label
+
+            if "results" in source.columns and float(source["results"].fillna(0).sum()) > 0:
+                label = "Results"
+                if "result_indicator" in source.columns:
+                    result_rows = source[source["results"].fillna(0) > 0]
+                    if not result_rows.empty:
+                        indicator_mode = (
+                            result_rows["result_indicator"]
+                            .dropna()
+                            .astype(str)
+                            .str.lower()
+                            .mode()
+                        )
+                        if not indicator_mode.empty:
+                            label = indicator_labels.get(indicator_mode.iloc[0], label)
+                return "results", label
+
+            if "clicks" in source.columns and float(source["clicks"].fillna(0).sum()) > 0:
+                return "clicks", "Clicks"
+
+            if "impressions" in source.columns and float(source["impressions"].fillna(0).sum()) > 0:
+                return "impressions", "Impressions"
+
+            return "spend", "Spend"
+
+        def format_metric_value(value: float, *, is_currency: bool = False) -> str:
+            if value is None or np.isnan(value):
+                return "–"
+            if is_currency:
+                return f"${value:,.2f}"
+            if abs(value) >= 100:
+                return f"{value:,.0f}"
+            if abs(value) >= 10:
+                return f"{value:,.1f}"
+            if abs(value) >= 1:
+                return f"{value:,.2f}"
+            return f"{value:,.3f}"
+
+        metric_column, metric_label = select_primary_metric(breakdown)
+        cost_label = metric_label[:-1] if metric_label.endswith("s") else metric_label
+
+        total_metric = float(breakdown.get(metric_column, pd.Series(dtype=float)).fillna(0).sum())
+        total_spend = float(breakdown.get("spend", pd.Series(dtype=float)).fillna(0).sum())
+        avg_cost = total_spend / total_metric if total_metric else np.nan
+
+        summary_cols = st.columns(3)
+        summary_cols[0].metric(f"Total {metric_label}", format_metric_value(total_metric))
+        summary_cols[1].metric("Total Spend", format_metric_value(total_spend, is_currency=True))
+        summary_cols[2].metric(
+            f"Cost per {cost_label}",
+            format_metric_value(avg_cost, is_currency=True),
+        )
 
         placement_column = None
         for candidate in ["placement", "platform"]:
@@ -1246,14 +1326,15 @@ class IntegratedDashboard:
                         "impressions": "sum",
                         "spend": "sum",
                         "clicks": "sum",
-                        "purchases": "sum",
+                        metric_column: "sum",
                     }
                 )
                 .reset_index()
             )
-            placement_perf["cpa"] = np.where(
-                placement_perf["purchases"] > 0,
-                placement_perf["spend"] / placement_perf["purchases"],
+            placement_perf = placement_perf.rename(columns={metric_column: "primary_metric"})
+            placement_perf["cost_per_metric"] = np.where(
+                placement_perf["primary_metric"] > 0,
+                placement_perf["spend"] / placement_perf["primary_metric"],
                 np.nan,
             )
             placement_perf["ctr"] = np.where(
@@ -1261,37 +1342,52 @@ class IntegratedDashboard:
                 placement_perf["clicks"] / placement_perf["impressions"],
                 0,
             )
-            placement_perf = placement_perf.sort_values("purchases", ascending=False)
+            placement_perf["conversion_rate"] = np.where(
+                placement_perf["impressions"] > 0,
+                placement_perf["primary_metric"] / placement_perf["impressions"],
+                np.nan,
+            )
+            placement_perf = placement_perf.sort_values("primary_metric", ascending=False)
 
-            with cols[0]:
-                st.markdown("Top placements by tickets sold")
-                fig = px.bar(
-                    placement_perf.head(10),
-                    x="purchases",
-                    y=placement_column,
-                    orientation="h",
-                    color="cpa",
-                    color_continuous_scale="RdYlGn",
-                    labels={
-                        "purchases": "Tickets Sold",
-                        placement_column: "Placement",
-                        "cpa": "Cost per Ticket",
-                    },
-                    hover_data={
-                        "spend": ":$.2f",
-                        "clicks": ":,.0f",
-                        "ctr": ":.2%",
-                        "cpa": ":$.2f",
-                    },
-                )
-                fig.update_layout(height=420)
-                st.plotly_chart(fig, use_container_width=True)
-
-                top_row = placement_perf.iloc[0] if not placement_perf.empty else None
-                if top_row is not None:
-                    st.caption(
-                        f"Best placement: {top_row[placement_column]} — {int(round(top_row['purchases'])):,} tickets"
+            if placement_perf["primary_metric"].sum() <= 0:
+                with cols[0]:
+                    st.info(
+                        f"The placement breakdown does not report any {metric_label.lower()} yet."
                     )
+            else:
+                with cols[0]:
+                    st.markdown(f"Top placements by {metric_label.lower()}")
+                    fig = px.bar(
+                        placement_perf.head(10),
+                        x="primary_metric",
+                        y=placement_column,
+                        orientation="h",
+                        color="cost_per_metric",
+                        color_continuous_scale="RdYlGn",
+                        labels={
+                            "primary_metric": metric_label,
+                            placement_column: "Placement",
+                            "cost_per_metric": f"Cost per {cost_label}",
+                        },
+                        hover_data={
+                            "spend": ":$.2f",
+                            "clicks": ":,.0f",
+                            "ctr": ":.2%",
+                            "conversion_rate": ":.2%",
+                            "cost_per_metric": ":$.2f",
+                        },
+                    )
+                    fig.update_layout(height=420)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    top_row = placement_perf.iloc[0] if not placement_perf.empty else None
+                    if top_row is not None:
+                        st.caption(
+                            "Best placement: "
+                            f"{top_row[placement_column]} — "
+                            f"{format_metric_value(top_row['primary_metric'])} "
+                            f"{metric_label.lower()}"
+                        )
         else:
             with cols[0]:
                 st.info("Placement details were not found in the uploaded file.")
@@ -1304,52 +1400,68 @@ class IntegratedDashboard:
                         "impressions": "sum",
                         "spend": "sum",
                         "clicks": "sum",
-                        "purchases": "sum",
+                        metric_column: "sum",
                     }
                 )
                 .reset_index()
             )
+            device_perf = device_perf.rename(columns={metric_column: "primary_metric"})
             device_perf["ctr"] = np.where(
                 device_perf["impressions"] > 0,
                 device_perf["clicks"] / device_perf["impressions"],
                 0,
             )
-            device_perf["cpa"] = np.where(
-                device_perf["purchases"] > 0,
-                device_perf["spend"] / device_perf["purchases"],
+            device_perf["cost_per_metric"] = np.where(
+                device_perf["primary_metric"] > 0,
+                device_perf["spend"] / device_perf["primary_metric"],
                 np.nan,
             )
-            device_perf = device_perf.sort_values("purchases", ascending=False)
+            device_perf["conversion_rate"] = np.where(
+                device_perf["impressions"] > 0,
+                device_perf["primary_metric"] / device_perf["impressions"],
+                np.nan,
+            )
+            device_perf = device_perf.sort_values("primary_metric", ascending=False)
 
-            with cols[1]:
-                st.markdown("Top devices by tickets sold")
-                fig = px.bar(
-                    device_perf.head(10),
-                    x="purchases",
-                    y=device_column,
-                    orientation="h",
-                    color="cpa",
-                    color_continuous_scale="RdYlGn",
-                    labels={
-                        "purchases": "Tickets Sold",
-                        device_column: "Device",
-                        "cpa": "Cost per Ticket",
-                    },
-                    hover_data={
-                        "spend": ":$.2f",
-                        "clicks": ":,.0f",
-                        "ctr": ":.2%",
-                        "cpa": ":$.2f",
-                    },
-                )
-                fig.update_layout(height=420)
-                st.plotly_chart(fig, use_container_width=True)
-
-                top_row = device_perf.iloc[0] if not device_perf.empty else None
-                if top_row is not None:
-                    st.caption(
-                        f"Best device: {top_row[device_column]} — {int(round(top_row['purchases'])):,} tickets"
+            if device_perf["primary_metric"].sum() <= 0:
+                with cols[1]:
+                    st.info(
+                        f"The device breakdown does not report any {metric_label.lower()} yet."
                     )
+            else:
+                with cols[1]:
+                    st.markdown(f"Top devices by {metric_label.lower()}")
+                    fig = px.bar(
+                        device_perf.head(10),
+                        x="primary_metric",
+                        y=device_column,
+                        orientation="h",
+                        color="cost_per_metric",
+                        color_continuous_scale="RdYlGn",
+                        labels={
+                            "primary_metric": metric_label,
+                            device_column: "Device",
+                            "cost_per_metric": f"Cost per {cost_label}",
+                        },
+                        hover_data={
+                            "spend": ":$.2f",
+                            "clicks": ":,.0f",
+                            "ctr": ":.2%",
+                            "conversion_rate": ":.2%",
+                            "cost_per_metric": ":$.2f",
+                        },
+                    )
+                    fig.update_layout(height=420)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    top_row = device_perf.iloc[0] if not device_perf.empty else None
+                    if top_row is not None:
+                        st.caption(
+                            "Best device: "
+                            f"{top_row[device_column]} — "
+                            f"{format_metric_value(top_row['primary_metric'])} "
+                            f"{metric_label.lower()}"
+                        )
         else:
             with cols[1]:
                 st.info("Device breakdown columns were not detected in the upload.")

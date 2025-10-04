@@ -48,6 +48,10 @@ class PublicSheetsConnector:
             "$": "USD",
             "US$": "USD",
             "USD": "USD",
+            "₹": "INR",
+            "â‚¹": "INR",
+            "INR": "INR",
+            "₨": "INR",
             "R$": "BRL",
             "BRL": "BRL",
             "MX$": "MXN",
@@ -80,6 +84,7 @@ class PublicSheetsConnector:
             "MXN": 0.055,
             "CAD": 0.74,
             "AUD": 0.66,
+            "INR": 0.012,
             "GBP": 1.27,
             "EUR": 1.08,
             "COP": 0.00026,
@@ -301,12 +306,24 @@ class PublicSheetsConnector:
 
         # Extract non-numeric characters to infer currency code
         currency_hint = re.sub(r'[0-9.,\-]', '', str_value)
-        currency_hint = currency_hint.replace(' ', '').upper()
-        currency_code = self.currency_aliases.get(currency_hint)
+        currency_hint = currency_hint.replace('\xa0', ' ')
+        currency_hint = currency_hint.replace(' ', '')
+        # Attempt to repair mojibake currency symbols (e.g. â‚¹ -> ₹)
+        try:
+            decoded_hint = currency_hint.encode('latin-1', 'ignore').decode('utf-8', 'ignore')
+            if decoded_hint:
+                currency_hint = decoded_hint
+        except Exception:
+            pass
+
+        currency_hint_upper = currency_hint.upper()
+        currency_code = self.currency_aliases.get(currency_hint_upper)
+        if currency_code is None:
+            currency_code = self.currency_aliases.get(currency_hint)
 
         if currency_code is None and currency_hint:
             for alias, code in self.currency_aliases.items():
-                if alias and alias in currency_hint:
+                if alias and alias in currency_hint_upper:
                     currency_code = code
                     break
 
