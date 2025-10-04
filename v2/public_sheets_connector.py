@@ -169,8 +169,12 @@ class PublicSheetsConnector:
                 continue
 
             elif line_type == "end_row":
-                logger.debug("Reached endRow marker at row %s", row_idx)
-                break
+                logger.debug("Encountered endRow marker at row %s", row_idx)
+                # Earlier versions of the app stopped parsing at the first endRow marker,
+                # but the sheet keeps historical snapshots beneath this delimiter. We
+                # continue scanning so that sales start dates and other KPIs consider the
+                # full reporting history. The marker is treated purely as an annotation.
+                continue
 
             elif line_type in ["month_asterisk", "header"]:
                 logger.debug("Skipping helper row (%s): %s", line_type, first_cell)
