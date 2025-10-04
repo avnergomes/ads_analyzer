@@ -767,6 +767,7 @@ class IntegratedDashboard:
                 snapshot.groupby("show_id")
                 .agg({"total_sold": "sum", "capacity": "sum", "sales_to_date": "sum"})
                 .reset_index()
+                .sort_values("show_date")
             )
             if not show_rank.empty:
                 show_rank["occupancy"] = np.where(
