@@ -626,6 +626,18 @@ class IntegratedDashboard:
         self.funnel_summary: Dict[str, FunnelSummary] = {}
 
     @staticmethod
+    def _active_only(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        """Return just the active rows from the ticket export when flagged."""
+        if df is None or df.empty:
+            return df
+
+        if "is_active_section" not in df.columns:
+            return df
+
+        active_df = df[df["is_active_section"]]
+        return active_df if not active_df.empty else df
+
+    @staticmethod
     def _latest_per_show(df: pd.DataFrame) -> pd.DataFrame:
         """Return the most recent record for each show ID."""
         if df is None or df.empty:
@@ -647,7 +659,8 @@ class IntegratedDashboard:
         if df is None or df.empty:
             return {}
 
-        snapshot = IntegratedDashboard._latest_per_show(df)
+        working_df = IntegratedDashboard._active_only(df)
+        snapshot = IntegratedDashboard._latest_per_show(working_df)
         if snapshot is None or snapshot.empty:
             return {}
 
@@ -717,7 +730,8 @@ class IntegratedDashboard:
 
         col1, col2 = st.columns(2)
 
-        snapshot = self._latest_per_show(df)
+        active_df = self._active_only(df)
+        snapshot = self._latest_per_show(active_df)
 
         with col1:
             st.markdown("**Top Cities by Tickets Sold**")
@@ -813,7 +827,10 @@ class IntegratedDashboard:
         if df is None or df.empty:
             return
 
-        shows = df.sort_values(["show_date", "show_id"])["show_id"].unique()
+        active_df = self._active_only(df)
+        shows = active_df.sort_values(["show_date", "show_id"])["show_id"].unique()
+        if len(shows) == 0:
+            shows = df.sort_values(["show_date", "show_id"])["show_id"].unique()
         if len(shows) == 0:
             return
 

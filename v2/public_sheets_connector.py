@@ -143,6 +143,8 @@ class PublicSheetsConnector:
 
         logger.info("Parsing %s rows from the sheet export", len(raw_data))
 
+        after_end_row = False
+
         for row_idx, row in enumerate(raw_data):
             if not row or len(row) == 0:
                 continue
@@ -162,7 +164,12 @@ class PublicSheetsConnector:
 
             elif line_type == "show_data":
                 # Extract show data
-                show_data = self._extract_show_data(row, row_idx, current_month)
+                show_data = self._extract_show_data(
+                    row,
+                    row_idx,
+                    current_month,
+                    is_active_section=not after_end_row,
+                )
                 if show_data:
                     processed_shows.append(show_data)
                     logger.debug(
@@ -179,6 +186,12 @@ class PublicSheetsConnector:
                 # but the sheet keeps historical snapshots beneath this delimiter. We
                 # continue scanning so that sales start dates and other KPIs consider the
                 # full reporting history. The marker is treated purely as an annotation.
+                #
+                # Rows above the first marker represent the "active" portion of the report
+                # while the data underneath contains historical snapshots. We flag the
+                # boundary so downstream summaries can focus on the active section while
+                # still keeping the historical rows for time-series analysis.
+                after_end_row = True
                 continue
 
             elif line_type in ["month_asterisk", "header"]:
@@ -230,7 +243,7 @@ class PublicSheetsConnector:
         except:
             return False
     
-    def _extract_show_data(self, row, row_idx, current_month):
+    def _extract_show_data(self, row, row_idx, current_month, *, is_active_section: bool):
         """Extract a structured dictionary for a single show row."""
         try:
             if len(row) < 18:
@@ -260,6 +273,7 @@ class PublicSheetsConnector:
             show_data['source_row'] = row_idx
             show_data['current_month'] = current_month
             show_data['extraction_date'] = datetime.now().isoformat()
+            show_data['is_active_section'] = bool(is_active_section)
 
             if not show_data.get('show_id') or not show_data.get('show_name'):
                 logger.warning("Row %s missing critical identifiers", row_idx)
@@ -414,11 +428,14 @@ class PublicSheetsConnector:
                        'artists_hold', 'kills', 'yesterday_sales', 'today_sold',
                        'total_sold', 'remaining', 'sold_percentage', 'atp',
                        'sales_to_date', 'sales_to_date_local']
-        
+
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-        
+
+        if 'is_active_section' in df.columns:
+            df['is_active_section'] = df['is_active_section'].fillna(False).astype(bool)
+
         return df
     
     def _add_calculated_fields(self, df):
@@ -506,7 +523,11 @@ class PublicSheetsConnector:
         if df is None or df.empty:
             return {"error": "No data available"}
 
-        latest = self._latest_per_show(df)
+        if 'is_active_section' in df.columns:
+            active_df = df[df['is_active_section']]
+            latest = self._latest_per_show(active_df if not active_df.empty else df)
+        else:
+            latest = self._latest_per_show(df)
 
         summary = {
             "total_shows": len(latest['show_id'].unique()),
