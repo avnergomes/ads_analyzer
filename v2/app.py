@@ -680,50 +680,75 @@ class IntegratedDashboard:
         }
 
     @staticmethod
-    def _build_sales_timeline(df: pd.DataFrame) -> pd.DataFrame:
+    def _build_sales_timeline(
+        df: pd.DataFrame, show_id: Optional[str] = None
+    ) -> pd.DataFrame:
         """Create a timeline with cumulative and daily ticket sales by report date."""
         if df is None or df.empty or "report_date" not in df.columns:
             return pd.DataFrame()
 
-        history = df.dropna(subset=["report_date"]).copy()
+        history = df.copy()
+        if show_id is not None:
+            history = history[history["show_id"] == show_id]
+
+        history = history.dropna(subset=["report_date"]).copy()
         if history.empty:
             return pd.DataFrame()
 
         history["report_date"] = pd.to_datetime(history["report_date"]).dt.normalize()
 
-        sort_columns = ["report_date", "show_id"]
+        sort_columns = ["show_id", "report_date"]
         if "source_row" in history.columns:
             sort_columns.append("source_row")
 
         history = history.sort_values(sort_columns)
 
-        latest_daily = (
-            history.groupby(["report_date", "show_id"], as_index=False)
+        per_day = (
+            history.groupby(["show_id", "report_date"], as_index=False)
             .agg(
                 total_sold=("total_sold", "last"),
                 reported_daily=("today_sold", "last"),
             )
+            .sort_values(["show_id", "report_date"])
         )
 
-        if latest_daily.empty:
+        if per_day.empty:
             return pd.DataFrame()
 
-        daily_totals = (
-            latest_daily.groupby("report_date", as_index=False)
+        per_day["total_sold"] = per_day["total_sold"].fillna(0.0)
+        per_day["reported_daily"] = (
+            per_day["reported_daily"].fillna(0.0).clip(lower=0.0)
+        )
+
+        per_day["increment_from_total"] = (
+            per_day.groupby("show_id")["total_sold"].diff()
+        )
+        per_day["increment_from_total"] = per_day["increment_from_total"].fillna(
+            per_day["total_sold"]
+        )
+        per_day["increment_from_total"] = per_day["increment_from_total"].clip(
+            lower=0.0
+        )
+
+        per_day["daily_sold"] = per_day[["reported_daily", "increment_from_total"]].max(
+            axis=1
+        )
+
+        aggregated = (
+            per_day.groupby("report_date", as_index=False)
             .agg(
-                raw_total=("total_sold", "sum"),
-                reported_daily=("reported_daily", lambda s: float(np.nansum(s))),
+                official_total=("total_sold", "sum"),
+                daily_sold=("daily_sold", "sum"),
             )
             .sort_values("report_date")
         )
 
-        if daily_totals.empty:
+        if aggregated.empty:
             return pd.DataFrame()
 
-        daily_totals["reported_flag"] = daily_totals["reported_daily"].notna()
-        daily_totals = daily_totals.set_index("report_date")
+        aggregated = aggregated.set_index("report_date")
 
-        start = daily_totals.index.min()
+        start = aggregated.index.min()
         end = pd.Timestamp.today().normalize()
         if pd.isna(start):
             return pd.DataFrame()
@@ -731,28 +756,31 @@ class IntegratedDashboard:
             end = start
 
         full_range = pd.date_range(start=start, end=end, freq="D")
-        daily_totals = daily_totals.reindex(full_range)
-        daily_totals.index.name = "report_date"
+        aggregated = aggregated.reindex(full_range)
+        aggregated.index.name = "report_date"
 
-        daily_totals["raw_total"] = daily_totals["raw_total"].ffill().fillna(0.0)
-        daily_totals["reported_daily"] = daily_totals["reported_daily"].fillna(0.0)
-        daily_totals["reported_flag"] = daily_totals["reported_flag"].fillna(False)
+        aggregated["daily_sold"] = aggregated["daily_sold"].fillna(0.0)
 
-        daily_totals["cumulative_total"] = daily_totals["raw_total"].cummax()
-        incremental_from_totals = (
-            daily_totals["cumulative_total"].diff().fillna(daily_totals["cumulative_total"])
-        )
-        incremental_from_totals = incremental_from_totals.clip(lower=0.0)
-        daily_totals["daily_sold"] = np.where(
-            daily_totals["reported_flag"],
-            daily_totals["reported_daily"],
-            incremental_from_totals,
-        )
-        daily_totals["daily_sold"] = daily_totals["daily_sold"].fillna(0.0)
-        daily_totals["cumulative_total"] = daily_totals["cumulative_total"].fillna(0.0)
+        running_total = 0.0
+        cumulative: List[float] = []
+        for raw_total, daily in aggregated[["official_total", "daily_sold"]].itertuples(
+            index=False
+        ):
+            raw_total = 0.0 if pd.isna(raw_total) else float(raw_total)
+            daily = float(daily or 0.0)
 
-        return daily_totals.reset_index()[
-            ["report_date", "cumulative_total", "daily_sold", "raw_total"]
+            projected = running_total + daily
+            if raw_total > 0:
+                running_total = max(raw_total, projected)
+            else:
+                running_total = max(projected, running_total)
+            cumulative.append(running_total)
+
+        aggregated["cumulative_total"] = cumulative
+        aggregated["official_total"] = aggregated["official_total"].fillna(0.0)
+
+        return aggregated.reset_index()[
+            ["report_date", "cumulative_total", "daily_sold", "official_total"]
         ]
 
     # ----------------------------- Sales --------------------------------- #
@@ -825,9 +853,33 @@ class IntegratedDashboard:
                 fig.update_layout(height=420)
                 st.plotly_chart(fig, use_container_width=True)
 
-        timeline = self._build_sales_timeline(df)
+        show_options: List[str] = []
+        if "show_id" in df.columns:
+            show_options = (
+                df["show_id"].dropna().astype(str).sort_values().unique().tolist()
+            )
+
+        selection_label = "Show timeline scope"
+        timeline_scope = "All shows"
+        if show_options:
+            timeline_scope = st.selectbox(
+                selection_label,
+                ["All shows"] + show_options,
+                key="sales_timeline_scope",
+            )
+        else:
+            st.caption("Showing ticket evolution for all records.")
+
+        selected_show_id = None
+        if timeline_scope != "All shows":
+            selected_show_id = timeline_scope
+
+        timeline = self._build_sales_timeline(df, selected_show_id)
         if not timeline.empty:
-            st.markdown("**Ticket Sales over Time**")
+            if selected_show_id:
+                st.markdown(f"**Ticket Sales over Time – {selected_show_id}**")
+            else:
+                st.markdown("**Ticket Sales over Time**")
             fig = make_subplots(specs=[[{"secondary_y": True}]])
             fig.add_trace(
                 go.Bar(
