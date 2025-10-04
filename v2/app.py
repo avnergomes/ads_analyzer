@@ -763,31 +763,45 @@ class IntegratedDashboard:
 
         if "show_id" in snapshot.columns:
             st.markdown("**Top Performing Shows**")
-            show_rank = (
-                snapshot.groupby("show_id")
-                .agg({"total_sold": "sum", "capacity": "sum", "sales_to_date": "sum"})
-                .reset_index()
-                .sort_values("show_date")
-            )
-            if not show_rank.empty:
+            show_rank = snapshot.copy()
+            label_source = "show_name" if "show_name" in show_rank.columns else "show_id"
+            show_rank["show_label"] = show_rank[label_source]
+            show_rank.loc[show_rank["show_label"].isna(), "show_label"] = show_rank["show_id"]
+
+            if "capacity" in show_rank.columns and "total_sold" in show_rank.columns:
                 show_rank["occupancy"] = np.where(
                     show_rank["capacity"] > 0,
                     (show_rank["total_sold"] / show_rank["capacity"]) * 100,
                     0,
                 )
+            else:
+                show_rank["occupancy"] = 0
+
+            sort_columns = ["total_sold"]
+            ascending = [False]
+            if "show_date" in show_rank.columns:
+                sort_columns.append("show_date")
+                ascending.append(True)
+
+            show_rank = show_rank.dropna(subset=["total_sold"]).sort_values(
+                sort_columns,
+                ascending=ascending,
+            ).head(10)
+
+            if not show_rank.empty:
                 fig = px.bar(
-                    show_rank.sort_values("total_sold", ascending=False).head(10),
-                    x="show_id",
+                    show_rank,
+                    x="show_label",
                     y="total_sold",
                     color="occupancy",
                     color_continuous_scale="RdYlGn",
                     labels={
-                        "show_id": "Show",
+                        "show_label": "Show",
                         "total_sold": "Tickets Sold",
                         "occupancy": "Occupancy %",
                     },
                 )
-                fig.update_layout(height=420)
+                fig.update_layout(height=420, xaxis_title="Show")
                 st.plotly_chart(fig, use_container_width=True)
 
     # -------------------------- Show Health ------------------------------ #
