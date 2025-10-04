@@ -361,32 +361,40 @@ class AdsDataProcessor:
         if df is None or df.empty:
             return df
 
+        df = df.copy()
         normalized_columns = {
             self._normalize_column_name(col): col for col in df.columns
         }
 
         # Map funnel columns from various aliases
         for target, aliases in self.funnel_column_aliases.items():
+            matched = False
             for alias in aliases:
                 normalized_alias = self._normalize_column_name(alias)
                 if normalized_alias in normalized_columns:
                     source_col = normalized_columns[normalized_alias]
-                    df[target] = df[source_col]
+                    df[target] = pd.to_numeric(
+                        df[source_col], errors="coerce"
+                    )
+                    matched = True
                     break
-            else:
-                # Create column with zeros if not found
-                if target not in df.columns:
-                    df[target] = 0
+            if not matched and target not in df.columns:
+                df[target] = 0.0
 
         # Extract funnel metrics from result_indicator if available
         if "result_indicator" in df.columns and "results" in df.columns:
             df = df.copy()
             df["results"] = pd.to_numeric(df["results"], errors="coerce")
-            
+
             for alias, target in self.funnel_indicator_aliases.items():
                 mask = df["result_indicator"].fillna("").str.lower() == alias.lower()
                 if mask.any():
-                    df.loc[mask, target] = df.loc[mask, "results"].astype(float)
+                    df.loc[mask, target] = pd.to_numeric(
+                        df.loc[mask, "results"], errors="coerce"
+                    )
+
+        for target in self.funnel_column_aliases.keys():
+            df[target] = pd.to_numeric(df.get(target, 0), errors="coerce").fillna(0.0)
 
         return df
 
@@ -679,100 +687,6 @@ class IntegratedDashboard:
             "sold_out_shows": sold_out_shows,
         }
 
-    @staticmethod
-    def _build_sales_timeline(
-        df: pd.DataFrame, show_id: Optional[str] = None
-    ) -> pd.DataFrame:
-        """Create a timeline with cumulative and daily ticket sales by report date."""
-        if df is None or df.empty or "report_date" not in df.columns:
-            return pd.DataFrame()
-
-        history = df.copy()
-        if show_id is not None:
-            history = history[history["show_id"] == show_id]
-
-        history = history.dropna(subset=["report_date"]).copy()
-        if history.empty:
-            return pd.DataFrame()
-
-        history["report_date"] = pd.to_datetime(history["report_date"]).dt.normalize()
-
-        per_day = (
-            history.groupby(["show_id", "report_date"], as_index=False)
-            .agg(
-                total_sold=("total_sold", "last"),
-                reported_daily=("today_sold", "last"),
-            )
-            .sort_values(["show_id", "report_date"])
-        )
-
-        if per_day.empty:
-            return pd.DataFrame()
-
-        per_day["total_sold"] = per_day["total_sold"].fillna(0.0)
-        per_day["reported_daily"] = per_day["reported_daily"].fillna(0.0).clip(lower=0.0)
-
-        start = per_day["report_date"].min()
-        end = pd.Timestamp.today().normalize()
-        if pd.isna(start):
-            return pd.DataFrame()
-        if pd.isna(end) or end < start:
-            end = start
-
-        full_range = pd.date_range(start=start, end=end, freq="D")
-        totals_matrix = (
-            per_day.pivot_table(
-                index="report_date",
-                columns="show_id",
-                values="total_sold",
-                aggfunc="last",
-            )
-            .reindex(full_range)
-            .sort_index()
-        )
-        totals_matrix.index.name = "report_date"
-        totals_matrix = totals_matrix.ffill().fillna(0.0)
-        totals_matrix = totals_matrix.cummax(axis=0)
-
-        reported_matrix = (
-            per_day.pivot_table(
-                index="report_date",
-                columns="show_id",
-                values="reported_daily",
-                aggfunc="last",
-            )
-            .reindex(full_range)
-            .sort_index()
-        )
-        reported_matrix.index.name = "report_date"
-        reported_matrix = reported_matrix.fillna(0.0)
-
-        aggregated = pd.DataFrame(
-            {
-                "official_total": totals_matrix.sum(axis=1),
-                "reported_daily": reported_matrix.sum(axis=1),
-            }
-        )
-
-        aggregated["cumulative_total"] = aggregated["official_total"].cummax()
-        aggregated["daily_net"] = aggregated["cumulative_total"].diff()
-        aggregated.loc[aggregated["daily_net"].isna(), "daily_net"] = aggregated[
-            "cumulative_total"
-        ]
-        aggregated["daily_net"] = aggregated["daily_net"].clip(lower=0.0)
-
-        result = aggregated.reset_index()
-        result.rename(columns={"daily_net": "daily_sold"}, inplace=True)
-        return result[
-            [
-                "report_date",
-                "cumulative_total",
-                "daily_sold",
-                "official_total",
-                "reported_daily",
-            ]
-        ]
-
     # ----------------------------- Sales --------------------------------- #
     def create_sales_overview(self, df: pd.DataFrame) -> None:
         if df is None or df.empty:
@@ -843,141 +757,38 @@ class IntegratedDashboard:
                 fig.update_layout(height=420)
                 st.plotly_chart(fig, use_container_width=True)
 
-        show_options: List[str] = []
-        if "show_id" in df.columns:
-            show_options = (
-                df["show_id"].dropna().astype(str).sort_values().unique().tolist()
-            )
+        if snapshot is None or snapshot.empty:
+            st.info("Ticket sales data is still being processed.")
+            return
 
-        selection_label = "Show timeline scope"
-        timeline_scope = "All shows"
-        if show_options:
-            timeline_scope = st.selectbox(
-                selection_label,
-                ["All shows"] + show_options,
-                key="sales_timeline_scope",
-            )
-        else:
-            st.caption("Showing ticket evolution for all records.")
-
-        selected_show_id = None
-        if timeline_scope != "All shows":
-            selected_show_id = timeline_scope
-
-        timeline = self._build_sales_timeline(df, selected_show_id)
-        if not timeline.empty:
-            if selected_show_id:
-                st.markdown(f"**Ticket Sales over Time – {selected_show_id}**")
-            else:
-                st.markdown("**Ticket Sales over Time**")
-            reported_series = (
-                timeline["reported_daily"].fillna(0.0)
-                if "reported_daily" in timeline
-                else pd.Series(0.0, index=timeline.index)
-            )
-            bar_customdata = np.stack(
-                [
-                    timeline["daily_sold"].to_numpy(),
-                    reported_series.to_numpy(),
-                ],
-                axis=-1,
-            )
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-            fig.add_trace(
-                go.Bar(
-                    x=timeline["report_date"],
-                    y=timeline["daily_sold"],
-                    name="Daily Tickets Sold",
-                    marker_color="#ff7f0e",
-                    customdata=bar_customdata,
-                    hovertemplate=(
-                        "%{x|%b %d, %Y}<br>Net tickets: %{customdata[0]:,.0f}"
-                        "<br>Reported sold: %{customdata[1]:,.0f}<extra></extra>"
-                    ),
-                ),
-                secondary_y=False,
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=timeline["report_date"],
-                    y=timeline["cumulative_total"],
-                    mode="lines+markers",
-                    name="Total Tickets Sold",
-                    line=dict(color="#1f77b4", width=2),
-                    hovertemplate=(
-                        "%{x|%b %d, %Y}<br>Total sold: %{y:,.0f}<extra></extra>"
-                    ),
-                ),
-                secondary_y=True,
-            )
-            start_date = timeline["report_date"].dropna().min()
-            end_date = pd.Timestamp.today().normalize()
-            if pd.isna(start_date):
-                start_date = end_date
-            if pd.isna(end_date):
-                end_date = start_date
-            if start_date is not None and end_date is not None and start_date > end_date:
-                end_date = start_date
-
-            fig.update_layout(
-                height=420,
-                xaxis_title="Report Date",
-                hovermode="x unified",
-                xaxis=dict(type="date", range=[start_date, end_date]),
-            )
-            fig.update_yaxes(title_text="Daily Tickets Sold", secondary_y=False)
-            fig.update_yaxes(title_text="Cumulative Tickets Sold", secondary_y=True)
-            st.plotly_chart(fig, use_container_width=True)
-        elif "show_date" in df.columns and df["show_date"].notna().any():
-            st.markdown("**Ticket Sales over Time**")
-            daily = (
-                df.groupby("show_date")
-                .agg({"today_sold": "sum", "total_sold": "sum"})
+        if "show_id" in snapshot.columns:
+            st.markdown("**Top Performing Shows**")
+            show_rank = (
+                snapshot.groupby("show_id")
+                .agg({"total_sold": "sum", "capacity": "sum", "sales_to_date": "sum"})
                 .reset_index()
                 .sort_values("show_date")
             )
-            daily["cumulative_total"] = daily["total_sold"].cumsum()
-
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-            fig.add_trace(
-                go.Bar(
-                    x=daily["show_date"],
-                    y=daily["today_sold"],
-                    name="Daily Tickets Sold",
-                    marker_color="#ff7f0e",
-                    hovertemplate="%{x|%b %d, %Y}<br>Daily sold: %{y:,.0f}<extra></extra>",
-                ),
-                secondary_y=False,
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=daily["show_date"],
-                    y=daily["cumulative_total"],
-                    mode="lines+markers",
-                    name="Total Tickets Sold",
-                    line=dict(color="#1f77b4", width=2),
-                    hovertemplate="%{x|%b %d, %Y}<br>Total sold: %{y:,.0f}<extra></extra>",
-                ),
-                secondary_y=True,
-            )
-            start_date = daily["show_date"].dropna().min()
-            end_date = pd.Timestamp.today().normalize()
-            if pd.isna(start_date):
-                start_date = end_date
-            if pd.isna(end_date):
-                end_date = start_date
-            if start_date is not None and end_date is not None and start_date > end_date:
-                end_date = start_date
-
-            fig.update_layout(
-                height=420,
-                xaxis_title="Show Date",
-                hovermode="x unified",
-                xaxis=dict(type="date", range=[start_date, end_date]),
-            )
-            fig.update_yaxes(title_text="Daily Tickets Sold", secondary_y=False)
-            fig.update_yaxes(title_text="Cumulative Tickets Sold", secondary_y=True)
-            st.plotly_chart(fig, use_container_width=True)
+            if not show_rank.empty:
+                show_rank["occupancy"] = np.where(
+                    show_rank["capacity"] > 0,
+                    (show_rank["total_sold"] / show_rank["capacity"]) * 100,
+                    0,
+                )
+                fig = px.bar(
+                    show_rank.sort_values("total_sold", ascending=False).head(10),
+                    x="show_id",
+                    y="total_sold",
+                    color="occupancy",
+                    color_continuous_scale="RdYlGn",
+                    labels={
+                        "show_id": "Show",
+                        "total_sold": "Tickets Sold",
+                        "occupancy": "Occupancy %",
+                    },
+                )
+                fig.update_layout(height=420)
+                st.plotly_chart(fig, use_container_width=True)
 
     # -------------------------- Show Health ------------------------------ #
     def render_show_health(
