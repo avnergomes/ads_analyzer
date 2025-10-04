@@ -7,7 +7,7 @@ import io
 import re
 import warnings
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -361,32 +361,40 @@ class AdsDataProcessor:
         if df is None or df.empty:
             return df
 
+        df = df.copy()
         normalized_columns = {
             self._normalize_column_name(col): col for col in df.columns
         }
 
         # Map funnel columns from various aliases
         for target, aliases in self.funnel_column_aliases.items():
+            matched = False
             for alias in aliases:
                 normalized_alias = self._normalize_column_name(alias)
                 if normalized_alias in normalized_columns:
                     source_col = normalized_columns[normalized_alias]
-                    df[target] = df[source_col]
+                    df[target] = pd.to_numeric(
+                        df[source_col], errors="coerce"
+                    )
+                    matched = True
                     break
-            else:
-                # Create column with zeros if not found
-                if target not in df.columns:
-                    df[target] = 0
+            if not matched and target not in df.columns:
+                df[target] = 0.0
 
         # Extract funnel metrics from result_indicator if available
         if "result_indicator" in df.columns and "results" in df.columns:
             df = df.copy()
             df["results"] = pd.to_numeric(df["results"], errors="coerce")
-            
+
             for alias, target in self.funnel_indicator_aliases.items():
                 mask = df["result_indicator"].fillna("").str.lower() == alias.lower()
                 if mask.any():
-                    df.loc[mask, target] = df.loc[mask, "results"].astype(float)
+                    df.loc[mask, target] = pd.to_numeric(
+                        df.loc[mask, "results"], errors="coerce"
+                    )
+
+        for target in self.funnel_column_aliases.keys():
+            df[target] = pd.to_numeric(df.get(target, 0), errors="coerce").fillna(0.0)
 
         return df
 
@@ -617,6 +625,68 @@ class IntegratedDashboard:
         self.ads_data_by_type: Dict[str, pd.DataFrame] = {}
         self.funnel_summary: Dict[str, FunnelSummary] = {}
 
+    @staticmethod
+    def _latest_per_show(df: pd.DataFrame) -> pd.DataFrame:
+        """Return the most recent record for each show ID."""
+        if df is None or df.empty:
+            return df
+
+        sort_columns = ["show_id"]
+        if "report_date" in df.columns:
+            sort_columns.append("report_date")
+
+        snapshot = (
+            df.sort_values(sort_columns)
+            .drop_duplicates(subset="show_id", keep="last")
+        )
+        return snapshot
+
+    @staticmethod
+    def summarize_sales(df: Optional[pd.DataFrame]) -> Dict[str, float]:
+        """Aggregate key ticket sales metrics from the latest snapshot per show."""
+        if df is None or df.empty:
+            return {}
+
+        snapshot = IntegratedDashboard._latest_per_show(df)
+        if snapshot is None or snapshot.empty:
+            return {}
+
+        total_shows = int(snapshot["show_id"].nunique())
+        capacity_series = snapshot["capacity"] if "capacity" in snapshot.columns else pd.Series(dtype=float)
+        total_capacity = float(capacity_series.fillna(0).sum())
+
+        sold_series = snapshot["total_sold"] if "total_sold" in snapshot.columns else pd.Series(dtype=float)
+        total_sold = float(sold_series.fillna(0).sum())
+
+        revenue_series = snapshot["sales_to_date"] if "sales_to_date" in snapshot.columns else pd.Series(dtype=float)
+        total_revenue = float(revenue_series.fillna(0).sum())
+
+        occupancy_series = snapshot["occupancy_rate"] if "occupancy_rate" in snapshot.columns else pd.Series(dtype=float)
+        if occupancy_series is not None and not occupancy_series.dropna().empty:
+            avg_occupancy = float(occupancy_series.dropna().mean())
+        else:
+            avg_occupancy = 0.0
+
+        ticket_price_series = snapshot["avg_ticket_price"] if "avg_ticket_price" in snapshot.columns else pd.Series(dtype=float)
+        if ticket_price_series is not None and not ticket_price_series.dropna().empty:
+            avg_ticket_price = float(ticket_price_series.dropna().mean())
+        else:
+            avg_ticket_price = 0.0
+
+        cities_count = int(snapshot["city"].nunique()) if "city" in snapshot.columns else 0
+        sold_out_shows = int(occupancy_series.fillna(0).ge(99).sum())
+
+        return {
+            "total_shows": total_shows,
+            "total_capacity": total_capacity,
+            "total_sold": total_sold,
+            "total_revenue": total_revenue,
+            "avg_occupancy": avg_occupancy,
+            "avg_ticket_price": avg_ticket_price,
+            "cities_count": cities_count,
+            "sold_out_shows": sold_out_shows,
+        }
+
     # ----------------------------- Sales --------------------------------- #
     def create_sales_overview(self, df: pd.DataFrame) -> None:
         if df is None or df.empty:
@@ -624,38 +694,36 @@ class IntegratedDashboard:
             return
 
         st.subheader("🎫 Ticket Sales Overview")
-
-        total_shows = len(df["show_id"].unique())
-        total_capacity = df["capacity"].sum()
-        total_sold = df["total_sold"].sum()
-        total_revenue = df["sales_to_date"].sum()
-        avg_occupancy = df["occupancy_rate"].mean()
-        cities_count = df["city"].nunique()
-        sold_out_shows = (df["occupancy_rate"] >= 99).sum()
+        summary = self.summarize_sales(df)
+        if not summary:
+            st.info("Ticket sales data is still being processed.")
+            return
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Shows", f"{total_shows:,}")
-        col2.metric("Total Capacity", f"{int(total_capacity):,}")
-        col3.metric("Tickets Sold", f"{int(total_sold):,}")
-        col4.metric("Revenue to Date", f"${total_revenue:,.0f}")
+        col1.metric("Shows", f"{summary['total_shows']:,}")
+        col2.metric("Total Capacity", f"{int(round(summary['total_capacity'])):,}")
+        col3.metric("Tickets Sold", f"{int(round(summary['total_sold'])):,}")
+        col4.metric("Revenue to Date", f"${summary['total_revenue']:,.0f}")
 
         col5, col6, col7, col8 = st.columns(4)
-        col5.metric("Average Occupancy", f"{avg_occupancy:.1f}%")
-        col6.metric("Average Ticket Price", f"${df['avg_ticket_price'].mean():,.0f}")
-        col7.metric("Cities", f"{cities_count}")
-        col8.metric("Sold Out", f"{sold_out_shows}")
+        col5.metric("Average Occupancy", f"{summary['avg_occupancy']:.1f}%")
+        col6.metric("Average Ticket Price", f"${summary['avg_ticket_price']:,.0f}")
+        col7.metric("Cities", f"{summary['cities_count']}")
+        col8.metric("Sold Out", f"{summary['sold_out_shows']}")
 
     def create_sales_charts(self, df: pd.DataFrame) -> None:
         if df is None or df.empty:
             return
 
         col1, col2 = st.columns(2)
-        
+
+        snapshot = self._latest_per_show(df)
+
         with col1:
             st.markdown("**Top Cities by Tickets Sold**")
-            if {"city", "total_sold", "capacity"}.issubset(df.columns):
+            if {"city", "total_sold", "capacity"}.issubset(snapshot.columns):
                 city_performance = (
-                    df.groupby("city")
+                    snapshot.groupby("city")
                     .agg({"total_sold": "sum", "capacity": "sum", "sales_to_date": "sum"})
                     .reset_index()
                 )
@@ -678,9 +746,9 @@ class IntegratedDashboard:
 
         with col2:
             st.markdown("**Occupancy Distribution**")
-            if "occupancy_rate" in df.columns:
+            if "occupancy_rate" in snapshot.columns:
                 fig = px.histogram(
-                    df,
+                    snapshot,
                     x="occupancy_rate",
                     nbins=20,
                     labels={"occupancy_rate": "Occupancy %"},
@@ -689,39 +757,37 @@ class IntegratedDashboard:
                 fig.update_layout(height=420)
                 st.plotly_chart(fig, use_container_width=True)
 
-        if "show_date" in df.columns and df["show_date"].notna().any():
-            st.markdown("**Ticket Sales over Time**")
-            daily = (
-                df.groupby("show_date")
-                .agg({"today_sold": "sum", "sales_to_date": "sum", "total_sold": "sum"})
+        if snapshot is None or snapshot.empty:
+            st.info("Ticket sales data is still being processed.")
+            return
+
+        if "show_id" in snapshot.columns:
+            st.markdown("**Top Performing Shows**")
+            show_rank = (
+                snapshot.groupby("show_id")
+                .agg({"total_sold": "sum", "capacity": "sum", "sales_to_date": "sum"})
                 .reset_index()
             )
-            fig = go.Figure()
-            fig.add_trace(
-                go.Scatter(
-                    x=daily["show_date"],
-                    y=daily["total_sold"],
-                    mode="lines+markers",
-                    name="Total Sold",
-                    line=dict(color="#1f77b4", width=2),
+            if not show_rank.empty:
+                show_rank["occupancy"] = np.where(
+                    show_rank["capacity"] > 0,
+                    (show_rank["total_sold"] / show_rank["capacity"]) * 100,
+                    0,
                 )
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=daily["show_date"],
-                    y=daily["today_sold"],
-                    mode="lines+markers",
-                    name="Sold Today",
-                    line=dict(color="#ff7f0e", width=2),
+                fig = px.bar(
+                    show_rank.sort_values("total_sold", ascending=False).head(10),
+                    x="show_id",
+                    y="total_sold",
+                    color="occupancy",
+                    color_continuous_scale="RdYlGn",
+                    labels={
+                        "show_id": "Show",
+                        "total_sold": "Tickets Sold",
+                        "occupancy": "Occupancy %",
+                    },
                 )
-            )
-            fig.update_layout(
-                height=420,
-                xaxis_title="Show Date",
-                yaxis_title="Tickets",
-                hovermode="x unified",
-            )
-            st.plotly_chart(fig, use_container_width=True)
+                fig.update_layout(height=420)
+                st.plotly_chart(fig, use_container_width=True)
 
     # -------------------------- Show Health ------------------------------ #
     def render_show_health(
@@ -768,11 +834,25 @@ class IntegratedDashboard:
 
         st.caption("Key metrics are based on the most recent report available for this show.")
 
-        col1, col2, col3, col4 = st.columns(4)
+        start_sales_date = (
+            show_records["report_date"].dropna().min()
+            if "report_date" in show_records.columns
+            else None
+        )
+        if pd.notna(start_sales_date):
+            start_sales_display = pd.to_datetime(start_sales_date).strftime("%b %d, %Y")
+        else:
+            start_sales_display = "Not available"
+
+        col1, col2, col3 = st.columns(3)
         col1.metric("Days to Show", days_to_show)
         col2.metric("Occupancy", f"{occupancy:.1f}%")
         col3.metric("Tickets Remaining", f"{int(remaining_tickets):,}")
-        col4.metric(
+
+        col4, col5, col6 = st.columns(3)
+        col4.metric("Total Capacity", f"{int(total_capacity):,}")
+        col5.metric("Sales Start Date", start_sales_display)
+        col6.metric(
             "Daily Sales Target",
             f"{daily_sales_target:.1f}",
             delta=f"{avg_sales_last_7:.1f} avg last 7d",
@@ -826,24 +906,39 @@ class IntegratedDashboard:
 
         with graph_col1:
             st.markdown("**Sales trajectory**")
+            chart_records = show_records.sort_values("report_date").copy()
+            chart_records["report_date"] = pd.to_datetime(
+                chart_records["report_date"]
+            ).dt.normalize()
+            revenue_series = chart_records.get("sales_to_date", pd.Series(dtype=float)).fillna(0.0)
+            tickets_series = chart_records.get("total_sold", pd.Series(dtype=float)).fillna(0.0)
+            chart_records["sales_to_date_monotonic"] = revenue_series.cummax()
+            chart_records["total_sold_monotonic"] = tickets_series.cummax()
+
             fig = go.Figure()
             fig.add_trace(
                 go.Scatter(
-                    x=show_records["report_date"],
-                    y=show_records["sales_to_date"],
+                    x=chart_records["report_date"],
+                    y=chart_records["sales_to_date_monotonic"],
                     mode="lines+markers",
                     name="Revenue to date",
                     line=dict(color="#1f77b4", width=2),
+                    hovertemplate=(
+                        "%{x|%b %d, %Y}<br>Revenue: $%{y:,.0f}<extra></extra>"
+                    ),
                 )
             )
             fig.add_trace(
                 go.Scatter(
-                    x=show_records["report_date"],
-                    y=show_records["total_sold"],
+                    x=chart_records["report_date"],
+                    y=chart_records["total_sold_monotonic"],
                     mode="lines+markers",
                     name="Tickets sold",
                     line=dict(color="#ff7f0e", width=2),
                     yaxis="y2",
+                    hovertemplate=(
+                        "%{x|%b %d, %Y}<br>Tickets: %{y:,.0f}<extra></extra>"
+                    ),
                 )
             )
             fig.update_layout(
@@ -884,7 +979,21 @@ class IntegratedDashboard:
             st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("**Seven-day sales cadence**")
-        cadence = show_records.tail(7)
+        end = pd.Timestamp.today().normalize()
+
+        cadence = show_records.copy()
+        cadence["report_date"] = pd.to_datetime(cadence["report_date"]).dt.normalize()
+        cadence = (
+            cadence.groupby("report_date")
+            .agg(today_sold=("today_sold", lambda s: float(np.nansum(s))))
+            .sort_index()
+        )
+
+        cadence_start = end - pd.Timedelta(days=6)
+        cadence_range = pd.date_range(start=cadence_start, end=end, freq="D")
+        cadence = cadence.reindex(cadence_range).fillna(0.0)
+        cadence = cadence.reset_index().rename(columns={"index": "report_date"})
+
         cadence_fig = px.bar(
             cadence,
             x="report_date",
@@ -921,7 +1030,11 @@ class IntegratedDashboard:
         col3.metric("Spend", f"${total_spend:,.2f}")
         col4.metric("Purchases", f"{int(total_conversions):,}")
 
-    def create_ads_charts(self, df: pd.DataFrame) -> None:
+    def create_ads_charts(
+        self,
+        df: pd.DataFrame,
+        placement_df: Optional[pd.DataFrame] = None,
+    ) -> None:
         if df is None or df.empty:
             return
 
@@ -982,6 +1095,261 @@ class IntegratedDashboard:
                 )
                 fig.update_layout(height=500, showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("**Placement and Device Performance**")
+        if placement_df is None or placement_df.empty:
+            st.info("Upload the placement and device breakdown to explore channel performance.")
+            return
+
+        breakdown = placement_df.copy()
+        numeric_columns = [
+            "impressions",
+            "clicks",
+            "spend",
+            "purchases",
+            "add_to_cart",
+            "results",
+        ]
+        for column in numeric_columns:
+            if column in breakdown.columns:
+                breakdown[column] = pd.to_numeric(breakdown[column], errors="coerce").fillna(0)
+            else:
+                breakdown[column] = 0
+
+        def select_primary_metric(source: pd.DataFrame) -> Tuple[str, str]:
+            """Choose the best available performance metric for visualisation."""
+
+            indicator_labels = {
+                "actions:landing_page_view": "Landing Page Views",
+                "actions:link_click": "Link Clicks",
+                "actions:offsite_conversion.fb_pixel_add_to_cart": "Add to Cart",
+                "actions:offsite_conversion.fb_pixel_purchase": "Tickets Sold",
+                "actions:onsite_conversion.lead_grouped": "Leads",
+                "reach": "Reach",
+            }
+
+            candidates = [
+                ("purchases", "Tickets Sold"),
+                ("add_to_cart", "Add to Cart"),
+            ]
+
+            for column, label in candidates:
+                if column in source.columns and float(source[column].fillna(0).sum()) > 0:
+                    return column, label
+
+            if "results" in source.columns and float(source["results"].fillna(0).sum()) > 0:
+                label = "Results"
+                if "result_indicator" in source.columns:
+                    result_rows = source[source["results"].fillna(0) > 0]
+                    if not result_rows.empty:
+                        indicator_mode = (
+                            result_rows["result_indicator"]
+                            .dropna()
+                            .astype(str)
+                            .str.lower()
+                            .mode()
+                        )
+                        if not indicator_mode.empty:
+                            label = indicator_labels.get(indicator_mode.iloc[0], label)
+                return "results", label
+
+            if "clicks" in source.columns and float(source["clicks"].fillna(0).sum()) > 0:
+                return "clicks", "Clicks"
+
+            if "impressions" in source.columns and float(source["impressions"].fillna(0).sum()) > 0:
+                return "impressions", "Impressions"
+
+            return "spend", "Spend"
+
+        def format_metric_value(value: float, *, is_currency: bool = False) -> str:
+            if value is None or np.isnan(value):
+                return "–"
+            if is_currency:
+                return f"${value:,.2f}"
+            if abs(value) >= 100:
+                return f"{value:,.0f}"
+            if abs(value) >= 10:
+                return f"{value:,.1f}"
+            if abs(value) >= 1:
+                return f"{value:,.2f}"
+            return f"{value:,.3f}"
+
+        metric_column, metric_label = select_primary_metric(breakdown)
+        cost_label = metric_label[:-1] if metric_label.endswith("s") else metric_label
+
+        total_metric = float(breakdown.get(metric_column, pd.Series(dtype=float)).fillna(0).sum())
+        total_spend = float(breakdown.get("spend", pd.Series(dtype=float)).fillna(0).sum())
+        avg_cost = total_spend / total_metric if total_metric else np.nan
+
+        summary_cols = st.columns(3)
+        summary_cols[0].metric(f"Total {metric_label}", format_metric_value(total_metric))
+        summary_cols[1].metric("Total Spend", format_metric_value(total_spend, is_currency=True))
+        summary_cols[2].metric(
+            f"Cost per {cost_label}",
+            format_metric_value(avg_cost, is_currency=True),
+        )
+
+        placement_column = None
+        for candidate in ["placement", "platform"]:
+            if candidate in breakdown.columns:
+                placement_column = candidate
+                break
+
+        device_column = None
+        for candidate in ["device_platform", "impression_device"]:
+            if candidate in breakdown.columns:
+                device_column = candidate
+                break
+
+        cols = st.columns(2)
+
+        if placement_column:
+            placement_perf = (
+                breakdown.groupby(placement_column)
+                .agg(
+                    {
+                        "impressions": "sum",
+                        "spend": "sum",
+                        "clicks": "sum",
+                        metric_column: "sum",
+                    }
+                )
+                .reset_index()
+            )
+            placement_perf = placement_perf.rename(columns={metric_column: "primary_metric"})
+            placement_perf["cost_per_metric"] = np.where(
+                placement_perf["primary_metric"] > 0,
+                placement_perf["spend"] / placement_perf["primary_metric"],
+                np.nan,
+            )
+            placement_perf["ctr"] = np.where(
+                placement_perf["impressions"] > 0,
+                placement_perf["clicks"] / placement_perf["impressions"],
+                0,
+            )
+            placement_perf["conversion_rate"] = np.where(
+                placement_perf["impressions"] > 0,
+                placement_perf["primary_metric"] / placement_perf["impressions"],
+                np.nan,
+            )
+            placement_perf = placement_perf.sort_values("primary_metric", ascending=False)
+
+            if placement_perf["primary_metric"].sum() <= 0:
+                with cols[0]:
+                    st.info(
+                        f"The placement breakdown does not report any {metric_label.lower()} yet."
+                    )
+            else:
+                with cols[0]:
+                    st.markdown(f"Top placements by {metric_label.lower()}")
+                    fig = px.bar(
+                        placement_perf.head(10),
+                        x="primary_metric",
+                        y=placement_column,
+                        orientation="h",
+                        color="cost_per_metric",
+                        color_continuous_scale="RdYlGn",
+                        labels={
+                            "primary_metric": metric_label,
+                            placement_column: "Placement",
+                            "cost_per_metric": f"Cost per {cost_label}",
+                        },
+                        hover_data={
+                            "spend": ":$.2f",
+                            "clicks": ":,.0f",
+                            "ctr": ":.2%",
+                            "conversion_rate": ":.2%",
+                            "cost_per_metric": ":$.2f",
+                        },
+                    )
+                    fig.update_layout(height=420)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    top_row = placement_perf.iloc[0] if not placement_perf.empty else None
+                    if top_row is not None:
+                        st.caption(
+                            "Best placement: "
+                            f"{top_row[placement_column]} — "
+                            f"{format_metric_value(top_row['primary_metric'])} "
+                            f"{metric_label.lower()}"
+                        )
+        else:
+            with cols[0]:
+                st.info("Placement details were not found in the uploaded file.")
+
+        if device_column:
+            device_perf = (
+                breakdown.groupby(device_column)
+                .agg(
+                    {
+                        "impressions": "sum",
+                        "spend": "sum",
+                        "clicks": "sum",
+                        metric_column: "sum",
+                    }
+                )
+                .reset_index()
+            )
+            device_perf = device_perf.rename(columns={metric_column: "primary_metric"})
+            device_perf["ctr"] = np.where(
+                device_perf["impressions"] > 0,
+                device_perf["clicks"] / device_perf["impressions"],
+                0,
+            )
+            device_perf["cost_per_metric"] = np.where(
+                device_perf["primary_metric"] > 0,
+                device_perf["spend"] / device_perf["primary_metric"],
+                np.nan,
+            )
+            device_perf["conversion_rate"] = np.where(
+                device_perf["impressions"] > 0,
+                device_perf["primary_metric"] / device_perf["impressions"],
+                np.nan,
+            )
+            device_perf = device_perf.sort_values("primary_metric", ascending=False)
+
+            if device_perf["primary_metric"].sum() <= 0:
+                with cols[1]:
+                    st.info(
+                        f"The device breakdown does not report any {metric_label.lower()} yet."
+                    )
+            else:
+                with cols[1]:
+                    st.markdown(f"Top devices by {metric_label.lower()}")
+                    fig = px.bar(
+                        device_perf.head(10),
+                        x="primary_metric",
+                        y=device_column,
+                        orientation="h",
+                        color="cost_per_metric",
+                        color_continuous_scale="RdYlGn",
+                        labels={
+                            "primary_metric": metric_label,
+                            device_column: "Device",
+                            "cost_per_metric": f"Cost per {cost_label}",
+                        },
+                        hover_data={
+                            "spend": ":$.2f",
+                            "clicks": ":,.0f",
+                            "ctr": ":.2%",
+                            "conversion_rate": ":.2%",
+                            "cost_per_metric": ":$.2f",
+                        },
+                    )
+                    fig.update_layout(height=420)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    top_row = device_perf.iloc[0] if not device_perf.empty else None
+                    if top_row is not None:
+                        st.caption(
+                            "Best device: "
+                            f"{top_row[device_column]} — "
+                            f"{format_metric_value(top_row['primary_metric'])} "
+                            f"{metric_label.lower()}"
+                        )
+        else:
+            with cols[1]:
+                st.info("Device breakdown columns were not detected in the upload.")
 
     # ------------------------ Integrated Analysis ------------------------ #
     def create_integration_analysis(
@@ -1098,7 +1466,7 @@ class IntegratedDashboard:
                 csv = sales_df.to_csv(index=False)
                 st.download_button("Download ticket sales CSV", csv, "sales_data.csv", "text/csv")
             else:
-                st.info("Load the ticket sales sheet to view details.")
+                st.info("Ticket sales data is loaded automatically from the Google Sheet once available.")
 
         with ads_col:
             st.subheader("📣 Advertising Data")
@@ -1121,10 +1489,10 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
 
-    st.title("📊 Flai Data's Ads Analyzer | v2.0")
+    st.title("🎭 Ads Analyzer v2.0")
     st.caption(
         "Integrated performance insights across Meta ads and live ticket sales. "
-        "Upload the Meta report exports (Days, Days + Placement + Device, Days + Time) to unlock the full analysis."
+        "Upload the Meta report exports and refresh the Google Sheet sync to unlock the full analysis."
     )
 
     st.sidebar.header("Configuration")
@@ -1136,22 +1504,64 @@ def main() -> None:
     ads_processor = AdsDataProcessor()
     dashboard = IntegratedDashboard()
 
-    # Load sales data
-    if "sales_data" not in st.session_state:
-        with st.spinner("Loading ticket sales from Google Sheets..."):
-            sales_data = sheets_connector.load_data()
-            st.session_state["sales_data"] = sales_data
-            if sales_data is not None:
-                summary = sheets_connector.get_data_summary(sales_data)
-                st.sidebar.success(f"Loaded {summary.get('total_shows', 0)} show reports")
-            else:
-                st.sidebar.error("Failed to load the public sheet. Please refresh the page.")
+    st.sidebar.subheader("Ticket sales data")
 
-    if st.sidebar.button("Refresh ticket sales"):
-        with st.spinner("Refreshing ticket sales data..."):
-            st.session_state["sales_data"] = sheets_connector.load_data()
+    if "sales_data" not in st.session_state:
+        st.session_state["sales_data"] = None
+        st.session_state["sales_last_refresh"] = None
+        st.session_state["sales_error"] = None
+
+    refresh_clicked = st.sidebar.button(
+        "Refresh ticket sales data",
+        help="Pull the latest snapshot directly from the shared Google Sheet.",
+    )
+
+    should_load_sales = (
+        st.session_state["sales_data"] is None
+        and st.session_state["sales_error"] is None
+    ) or refresh_clicked
+
+    if should_load_sales:
+        with st.spinner("Loading ticket sales data from Google Sheets..."):
+            fetched_sales = sheets_connector.load_data()
+
+        if fetched_sales is not None and not fetched_sales.empty:
+            st.session_state["sales_data"] = fetched_sales
+            st.session_state["sales_last_refresh"] = datetime.utcnow()
+            st.session_state["sales_error"] = None
+            summary = dashboard.summarize_sales(fetched_sales)
+            loaded_shows = summary.get("total_shows", 0) if summary else 0
+            st.sidebar.success(
+                f"Loaded {loaded_shows} show report{'s' if loaded_shows != 1 else ''} from Google Sheets."
+            )
+        else:
+            st.session_state["sales_data"] = None
+            st.session_state["sales_error"] = "Ticket sales data is unavailable."
+            st.sidebar.error("Could not load ticket sales data from the Google Sheet. Please try again later.")
 
     sales_df = st.session_state.get("sales_data")
+    sales_error = st.session_state.get("sales_error")
+
+    sales_summary: Dict[str, float] = {}
+    if sales_df is not None and not sales_df.empty:
+        sales_summary = dashboard.summarize_sales(sales_df)
+        if sales_summary:
+            st.sidebar.metric("Shows tracked", f"{sales_summary['total_shows']:,}")
+            st.sidebar.metric("Total capacity", f"{int(round(sales_summary['total_capacity'])):,}")
+            st.sidebar.metric("Tickets sold", f"{int(round(sales_summary['total_sold'])):,}")
+            st.sidebar.metric("Revenue to date", f"${sales_summary['total_revenue']:,.0f}")
+        last_refresh = st.session_state.get("sales_last_refresh")
+        if last_refresh is not None:
+            st.sidebar.caption(
+                f"Last refreshed: {last_refresh.strftime('%Y-%m-%d %H:%M UTC')}"
+            )
+    elif sales_error:
+        st.sidebar.warning(
+            "Ticket sales data is unavailable. Refresh once the Google Sheet is updated."
+        )
+    else:
+        st.sidebar.info("Loading ticket sales data from Google Sheets...")
+
     dashboard.sales_data = sales_df
 
     # File uploader
@@ -1194,9 +1604,14 @@ def main() -> None:
 
     with tab_ads:
         days_df = dashboard.ads_data_by_type.get("days") if dashboard.ads_data_by_type else None
+        placement_df = (
+            dashboard.ads_data_by_type.get("days_placement_device")
+            if dashboard.ads_data_by_type
+            else None
+        )
         dashboard.create_ads_overview(days_df)
         st.markdown("---")
-        dashboard.create_ads_charts(days_df)
+        dashboard.create_ads_charts(days_df, placement_df)
 
     with tab_integration:
         days_df = dashboard.ads_data_by_type.get("days") if dashboard.ads_data_by_type else None
@@ -1206,7 +1621,6 @@ def main() -> None:
         dashboard.render_raw_tables(sales_df, dashboard.ads_data_by_type)
 
     st.markdown("---")
-    st.caption("Built for Flai Data using Streamlit · Ads Analyzer v2.0 | **© 2025 Avner Gomes**")
 
 
 if __name__ == "__main__":
