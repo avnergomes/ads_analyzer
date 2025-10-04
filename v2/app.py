@@ -697,12 +697,6 @@ class IntegratedDashboard:
 
         history["report_date"] = pd.to_datetime(history["report_date"]).dt.normalize()
 
-        sort_columns = ["show_id", "report_date"]
-        if "source_row" in history.columns:
-            sort_columns.append("source_row")
-
-        history = history.sort_values(sort_columns)
-
         per_day = (
             history.groupby(["show_id", "report_date"], as_index=False)
             .agg(
@@ -716,39 +710,9 @@ class IntegratedDashboard:
             return pd.DataFrame()
 
         per_day["total_sold"] = per_day["total_sold"].fillna(0.0)
-        per_day["reported_daily"] = (
-            per_day["reported_daily"].fillna(0.0).clip(lower=0.0)
-        )
+        per_day["reported_daily"] = per_day["reported_daily"].fillna(0.0).clip(lower=0.0)
 
-        per_day["increment_from_total"] = (
-            per_day.groupby("show_id")["total_sold"].diff()
-        )
-        per_day["increment_from_total"] = per_day["increment_from_total"].fillna(
-            per_day["total_sold"]
-        )
-        per_day["increment_from_total"] = per_day["increment_from_total"].clip(
-            lower=0.0
-        )
-
-        per_day["daily_sold"] = per_day[["reported_daily", "increment_from_total"]].max(
-            axis=1
-        )
-
-        aggregated = (
-            per_day.groupby("report_date", as_index=False)
-            .agg(
-                official_total=("total_sold", "sum"),
-                daily_sold=("daily_sold", "sum"),
-            )
-            .sort_values("report_date")
-        )
-
-        if aggregated.empty:
-            return pd.DataFrame()
-
-        aggregated = aggregated.set_index("report_date")
-
-        start = aggregated.index.min()
+        start = per_day["report_date"].min()
         end = pd.Timestamp.today().normalize()
         if pd.isna(start):
             return pd.DataFrame()
@@ -756,31 +720,57 @@ class IntegratedDashboard:
             end = start
 
         full_range = pd.date_range(start=start, end=end, freq="D")
-        aggregated = aggregated.reindex(full_range)
-        aggregated.index.name = "report_date"
+        totals_matrix = (
+            per_day.pivot_table(
+                index="report_date",
+                columns="show_id",
+                values="total_sold",
+                aggfunc="last",
+            )
+            .reindex(full_range)
+            .sort_index()
+        )
+        totals_matrix.index.name = "report_date"
+        totals_matrix = totals_matrix.ffill().fillna(0.0)
+        totals_matrix = totals_matrix.cummax(axis=0)
 
-        aggregated["daily_sold"] = aggregated["daily_sold"].fillna(0.0)
+        reported_matrix = (
+            per_day.pivot_table(
+                index="report_date",
+                columns="show_id",
+                values="reported_daily",
+                aggfunc="last",
+            )
+            .reindex(full_range)
+            .sort_index()
+        )
+        reported_matrix.index.name = "report_date"
+        reported_matrix = reported_matrix.fillna(0.0)
 
-        running_total = 0.0
-        cumulative: List[float] = []
-        for raw_total, daily in aggregated[["official_total", "daily_sold"]].itertuples(
-            index=False
-        ):
-            raw_total = 0.0 if pd.isna(raw_total) else float(raw_total)
-            daily = float(daily or 0.0)
+        aggregated = pd.DataFrame(
+            {
+                "official_total": totals_matrix.sum(axis=1),
+                "reported_daily": reported_matrix.sum(axis=1),
+            }
+        )
 
-            projected = running_total + daily
-            if raw_total > 0:
-                running_total = max(raw_total, projected)
-            else:
-                running_total = max(projected, running_total)
-            cumulative.append(running_total)
+        aggregated["cumulative_total"] = aggregated["official_total"].cummax()
+        aggregated["daily_net"] = aggregated["cumulative_total"].diff()
+        aggregated.loc[aggregated["daily_net"].isna(), "daily_net"] = aggregated[
+            "cumulative_total"
+        ]
+        aggregated["daily_net"] = aggregated["daily_net"].clip(lower=0.0)
 
-        aggregated["cumulative_total"] = cumulative
-        aggregated["official_total"] = aggregated["official_total"].fillna(0.0)
-
-        return aggregated.reset_index()[
-            ["report_date", "cumulative_total", "daily_sold", "official_total"]
+        result = aggregated.reset_index()
+        result.rename(columns={"daily_net": "daily_sold"}, inplace=True)
+        return result[
+            [
+                "report_date",
+                "cumulative_total",
+                "daily_sold",
+                "official_total",
+                "reported_daily",
+            ]
         ]
 
     # ----------------------------- Sales --------------------------------- #
@@ -880,6 +870,18 @@ class IntegratedDashboard:
                 st.markdown(f"**Ticket Sales over Time – {selected_show_id}**")
             else:
                 st.markdown("**Ticket Sales over Time**")
+            reported_series = (
+                timeline["reported_daily"].fillna(0.0)
+                if "reported_daily" in timeline
+                else pd.Series(0.0, index=timeline.index)
+            )
+            bar_customdata = np.stack(
+                [
+                    timeline["daily_sold"].to_numpy(),
+                    reported_series.to_numpy(),
+                ],
+                axis=-1,
+            )
             fig = make_subplots(specs=[[{"secondary_y": True}]])
             fig.add_trace(
                 go.Bar(
@@ -887,7 +889,11 @@ class IntegratedDashboard:
                     y=timeline["daily_sold"],
                     name="Daily Tickets Sold",
                     marker_color="#ff7f0e",
-                    hovertemplate="%{x|%b %d, %Y}<br>Daily sold: %{y:,.0f}<extra></extra>",
+                    customdata=bar_customdata,
+                    hovertemplate=(
+                        "%{x|%b %d, %Y}<br>Net tickets: %{customdata[0]:,.0f}"
+                        "<br>Reported sold: %{customdata[1]:,.0f}<extra></extra>"
+                    ),
                 ),
                 secondary_y=False,
             )
@@ -898,7 +904,9 @@ class IntegratedDashboard:
                     mode="lines+markers",
                     name="Total Tickets Sold",
                     line=dict(color="#1f77b4", width=2),
-                    hovertemplate="%{x|%b %d, %Y}<br>Total sold: %{y:,.0f}<extra></extra>",
+                    hovertemplate=(
+                        "%{x|%b %d, %Y}<br>Total sold: %{y:,.0f}<extra></extra>"
+                    ),
                 ),
                 secondary_y=True,
             )
@@ -1088,24 +1096,39 @@ class IntegratedDashboard:
 
         with graph_col1:
             st.markdown("**Sales trajectory**")
+            chart_records = show_records.sort_values("report_date").copy()
+            chart_records["report_date"] = pd.to_datetime(
+                chart_records["report_date"]
+            ).dt.normalize()
+            revenue_series = chart_records.get("sales_to_date", pd.Series(dtype=float)).fillna(0.0)
+            tickets_series = chart_records.get("total_sold", pd.Series(dtype=float)).fillna(0.0)
+            chart_records["sales_to_date_monotonic"] = revenue_series.cummax()
+            chart_records["total_sold_monotonic"] = tickets_series.cummax()
+
             fig = go.Figure()
             fig.add_trace(
                 go.Scatter(
-                    x=show_records["report_date"],
-                    y=show_records["sales_to_date"],
+                    x=chart_records["report_date"],
+                    y=chart_records["sales_to_date_monotonic"],
                     mode="lines+markers",
                     name="Revenue to date",
                     line=dict(color="#1f77b4", width=2),
+                    hovertemplate=(
+                        "%{x|%b %d, %Y}<br>Revenue: $%{y:,.0f}<extra></extra>"
+                    ),
                 )
             )
             fig.add_trace(
                 go.Scatter(
-                    x=show_records["report_date"],
-                    y=show_records["total_sold"],
+                    x=chart_records["report_date"],
+                    y=chart_records["total_sold_monotonic"],
                     mode="lines+markers",
                     name="Tickets sold",
                     line=dict(color="#ff7f0e", width=2),
                     yaxis="y2",
+                    hovertemplate=(
+                        "%{x|%b %d, %Y}<br>Tickets: %{y:,.0f}<extra></extra>"
+                    ),
                 )
             )
             fig.update_layout(
