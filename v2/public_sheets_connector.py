@@ -6,6 +6,7 @@ import requests
 import csv
 from io import StringIO
 from datetime import datetime
+from typing import Optional, Union
 import re
 import logging
 
@@ -41,6 +42,57 @@ class PublicSheetsConnector:
             17: 'report_message'    # Additional notes
         }
 
+        # Known currency aliases and approximate USD conversion rates
+        self.currency_aliases = {
+            "": "USD",
+            "$": "USD",
+            "US$": "USD",
+            "USD": "USD",
+            "₹": "INR",
+            "â‚¹": "INR",
+            "INR": "INR",
+            "₨": "INR",
+            "R$": "BRL",
+            "BRL": "BRL",
+            "MX$": "MXN",
+            "MXN": "MXN",
+            "MXN$": "MXN",
+            "CA$": "CAD",
+            "CAD": "CAD",
+            "C$": "CAD",
+            "A$": "AUD",
+            "AUD": "AUD",
+            "£": "GBP",
+            "GBP": "GBP",
+            "€": "EUR",
+            "EUR": "EUR",
+            "COP": "COP",
+            "COP$": "COP",
+            "CLP": "CLP",
+            "CLP$": "CLP",
+            "ARS": "ARS",
+            "ARS$": "ARS",
+            "PEN": "PEN",
+            "PEN$": "PEN",
+            "S/": "PEN",
+        }
+
+        # Static FX reference table (can be refreshed periodically)
+        self.currency_to_usd = {
+            "USD": 1.0,
+            "BRL": 0.20,
+            "MXN": 0.055,
+            "CAD": 0.74,
+            "AUD": 0.66,
+            "INR": 0.012,
+            "GBP": 1.27,
+            "EUR": 1.08,
+            "COP": 0.00026,
+            "CLP": 0.0011,
+            "ARS": 0.0012,
+            "PEN": 0.27,
+        }
+
         # Patterns used to classify each row in the CSV export
         self.patterns = {
             'month_header': r'^(September|October|November|December)$',
@@ -51,15 +103,20 @@ class PublicSheetsConnector:
             'date_format': r'^\d{4}-\d{2}-\d{2}$'
         }
     
-    def load_data(self):
-        """Download the public sheet and return a cleaned DataFrame."""
+    def load_data(self, csv_payload: Optional[Union[str, bytes]] = None):
+        """Download or parse the ticket sheet and return a cleaned DataFrame."""
         try:
-            # Download CSV content
-            response = requests.get(self.csv_url, timeout=30)
-            response.raise_for_status()
+            if csv_payload is None:
+                response = requests.get(self.csv_url, timeout=30)
+                response.raise_for_status()
+                csv_text = response.text
+            else:
+                if isinstance(csv_payload, bytes):
+                    csv_text = csv_payload.decode("utf-8-sig")
+                else:
+                    csv_text = csv_payload
 
-            # Parse CSV
-            csv_data = StringIO(response.text)
+            csv_data = StringIO(csv_text)
             reader = csv.reader(csv_data)
 
             # Row-by-row analysis
@@ -78,13 +135,15 @@ class PublicSheetsConnector:
         except Exception as e:
             logger.error("Failed to load sheet: %s", e)
             return None
-    
+
     def _analyze_rows_minutely(self, raw_data):
         """Iterate through raw rows and keep only valid show entries."""
         processed_shows = []
         current_month = None
 
         logger.info("Parsing %s rows from the sheet export", len(raw_data))
+
+        after_end_row = False
 
         for row_idx, row in enumerate(raw_data):
             if not row or len(row) == 0:
@@ -105,7 +164,12 @@ class PublicSheetsConnector:
 
             elif line_type == "show_data":
                 # Extract show data
-                show_data = self._extract_show_data(row, row_idx, current_month)
+                show_data = self._extract_show_data(
+                    row,
+                    row_idx,
+                    current_month,
+                    is_active_section=not after_end_row,
+                )
                 if show_data:
                     processed_shows.append(show_data)
                     logger.debug(
@@ -116,7 +180,21 @@ class PublicSheetsConnector:
                 logger.debug("Skipping summary line: %s", first_cell)
                 continue
 
-            elif line_type in ["month_asterisk", "end_row", "header"]:
+            elif line_type == "end_row":
+                logger.debug("Encountered endRow marker at row %s", row_idx)
+                # Earlier versions of the app stopped parsing at the first endRow marker,
+                # but the sheet keeps historical snapshots beneath this delimiter. We
+                # continue scanning so that sales start dates and other KPIs consider the
+                # full reporting history. The marker is treated purely as an annotation.
+                #
+                # Rows above the first marker represent the "active" portion of the report
+                # while the data underneath contains historical snapshots. We flag the
+                # boundary so downstream summaries can focus on the active section while
+                # still keeping the historical rows for time-series analysis.
+                after_end_row = True
+                continue
+
+            elif line_type in ["month_asterisk", "header"]:
                 logger.debug("Skipping helper row (%s): %s", line_type, first_cell)
                 continue
 
@@ -165,7 +243,7 @@ class PublicSheetsConnector:
         except:
             return False
     
-    def _extract_show_data(self, row, row_idx, current_month):
+    def _extract_show_data(self, row, row_idx, current_month, *, is_active_section: bool):
         """Extract a structured dictionary for a single show row."""
         try:
             if len(row) < 18:
@@ -179,7 +257,13 @@ class PublicSheetsConnector:
             for col_idx, field_name in self.column_mapping.items():
                 try:
                     value = row[col_idx] if col_idx < len(row) else None
-                    show_data[field_name] = self._clean_cell_value(value, field_name)
+                    if field_name == 'sales_to_date':
+                        usd_value, currency_code, original_value = self._parse_currency_value(value)
+                        show_data['sales_currency'] = currency_code
+                        show_data['sales_to_date_local'] = original_value
+                        show_data[field_name] = usd_value
+                    else:
+                        show_data[field_name] = self._clean_cell_value(value, field_name)
                 except Exception as e:
                     logger.warning(
                         "Failed to read field %s in row %s: %s", field_name, row_idx, e
@@ -189,6 +273,7 @@ class PublicSheetsConnector:
             show_data['source_row'] = row_idx
             show_data['current_month'] = current_month
             show_data['extraction_date'] = datetime.now().isoformat()
+            show_data['is_active_section'] = bool(is_active_section)
 
             if not show_data.get('show_id') or not show_data.get('show_name'):
                 logger.warning("Row %s missing critical identifiers", row_idx)
@@ -207,13 +292,6 @@ class PublicSheetsConnector:
 
         str_value = str(value).strip()
 
-        if field_name in ['sales_to_date']:
-            cleaned = re.sub(r'[$R$,\s]', '', str_value)
-            try:
-                return float(cleaned)
-            except:
-                return None
-
         if field_name in ['capacity', 'venue_holds', 'wheelchair_companions', 'camera',
                          'artists_hold', 'kills', 'yesterday_sales', 'today_sold',
                          'total_sold', 'remaining', 'sold_percentage', 'atp']:
@@ -230,7 +308,101 @@ class PublicSheetsConnector:
                 return None
 
         return str_value if str_value else None
-    
+
+    def _parse_currency_value(self, value):
+        """Convert a currency string into USD using static FX rates."""
+        if value is None:
+            return None, None, None
+
+        str_value = str(value).strip()
+        if not str_value:
+            return None, None, None
+
+        # Extract non-numeric characters to infer currency code
+        currency_hint = re.sub(r'[0-9.,\-]', '', str_value)
+        currency_hint = currency_hint.replace('\xa0', ' ')
+        currency_hint = currency_hint.replace(' ', '')
+        # Attempt to repair mojibake currency symbols (e.g. â‚¹ -> ₹)
+        try:
+            decoded_hint = currency_hint.encode('latin-1', 'ignore').decode('utf-8', 'ignore')
+            if decoded_hint:
+                currency_hint = decoded_hint
+        except Exception:
+            pass
+
+        currency_hint_upper = currency_hint.upper()
+        currency_code = self.currency_aliases.get(currency_hint_upper)
+        if currency_code is None:
+            currency_code = self.currency_aliases.get(currency_hint)
+
+        if currency_code is None and currency_hint:
+            for alias, code in self.currency_aliases.items():
+                if alias and alias in currency_hint_upper:
+                    currency_code = code
+                    break
+
+        if currency_code is None:
+            currency_code = 'USD'
+
+        # Remove any non-numeric characters for amount parsing
+        numeric_portion = re.sub(r'[^0-9,\.\-]', '', str_value)
+        amount = self._parse_numeric_value(numeric_portion)
+
+        if amount is None:
+            return None, currency_code, None
+
+        fx_rate = self.currency_to_usd.get(currency_code, 1.0)
+        usd_value = amount * fx_rate
+        return usd_value, currency_code, amount
+
+    @staticmethod
+    def _parse_numeric_value(value: str) -> Optional[float]:
+        """Convert a locale-agnostic numeric string into a float."""
+        if value is None:
+            return None
+
+        text = value.strip()
+        if not text:
+            return None
+
+        # Handle thousands/decimal separators
+        if text.count(',') > 0 and text.count('.') > 0:
+            if text.rfind('.') > text.rfind(','):
+                text = text.replace(',', '')
+            else:
+                text = text.replace('.', '').replace(',', '.')
+        elif text.count(',') > 0 and text.count('.') == 0:
+            text = text.replace('.', '').replace(',', '.')
+        else:
+            text = text.replace(',', '')
+
+        # Ensure only the first minus is kept
+        if text.count('-') > 1:
+            text = text.replace('-', '')
+        if text.endswith('-'):
+            text = '-' + text[:-1]
+
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _latest_per_show(df: pd.DataFrame) -> pd.DataFrame:
+        """Return the most recent record for each show based on report_date."""
+        if df is None or df.empty:
+            return df
+
+        sort_columns = ['show_id']
+        if 'report_date' in df.columns:
+            sort_columns.append('report_date')
+
+        latest = (
+            df.sort_values(sort_columns)
+            .drop_duplicates(subset='show_id', keep='last')
+        )
+        return latest
+
     def _clean_and_transform(self, df):
         """Apply type conversions, calculated fields, and additional metadata."""
         if df.empty:
@@ -254,12 +426,16 @@ class PublicSheetsConnector:
 
         numeric_cols = ['capacity', 'venue_holds', 'wheelchair_companions', 'camera',
                        'artists_hold', 'kills', 'yesterday_sales', 'today_sold',
-                       'total_sold', 'remaining', 'sold_percentage', 'atp', 'sales_to_date']
-        
+                       'total_sold', 'remaining', 'sold_percentage', 'atp',
+                       'sales_to_date', 'sales_to_date_local']
+
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-        
+
+        if 'is_active_section' in df.columns:
+            df['is_active_section'] = df['is_active_section'].fillna(False).astype(bool)
+
         return df
     
     def _add_calculated_fields(self, df):
@@ -330,7 +506,7 @@ class PublicSheetsConnector:
         df['city'] = df['show_name'].str.extract(r'\.([A-Za-z\s]+)', expand=False)
         df['city'] = df['city'].str.strip()
 
-        df['is_multi_show'] = df['show_id'].str.contains('_S\d+', na=False)
+        df['is_multi_show'] = df['show_id'].str.contains(r'_S\d+', na=False)
         df['show_sequence'] = df['show_id'].str.extract(r'_S(\d+)', expand=False)
         df['show_sequence'] = pd.to_numeric(df['show_sequence'], errors='coerce')
 
@@ -347,26 +523,32 @@ class PublicSheetsConnector:
         if df is None or df.empty:
             return {"error": "No data available"}
 
+        if 'is_active_section' in df.columns:
+            active_df = df[df['is_active_section']]
+            latest = self._latest_per_show(active_df if not active_df.empty else df)
+        else:
+            latest = self._latest_per_show(df)
+
         summary = {
-            "total_shows": len(df),
-            "unique_cities": df['city'].nunique() if 'city' in df.columns else 0,
-            "total_capacity": df['capacity'].sum(),
-            "total_sold": df['total_sold'].sum(),
-            "total_revenue": df['sales_to_date'].sum(),
-            "avg_occupancy": df['occupancy_rate'].mean(),
+            "total_shows": len(latest['show_id'].unique()),
+            "unique_cities": latest['city'].nunique() if 'city' in latest.columns else 0,
+            "total_capacity": latest['capacity'].sum(),
+            "total_sold": latest['total_sold'].sum(),
+            "total_revenue": latest['sales_to_date'].sum(),
+            "avg_occupancy": latest['occupancy_rate'].mean(),
             "date_range": {
                 "start": df['show_date'].min(),
                 "end": df['show_date'].max()
             },
-            "cities": df['city'].value_counts().to_dict() if 'city' in df.columns else {},
-            "performance_distribution": df['performance_category'].value_counts().to_dict() if 'performance_category' in df.columns else {},
+            "cities": latest['city'].value_counts().to_dict() if 'city' in latest.columns else {},
+            "performance_distribution": latest['performance_category'].value_counts().to_dict() if 'performance_category' in latest.columns else {},
             "data_quality": {
-                "complete_records": df.dropna().shape[0],
-                "missing_revenue": df['sales_to_date'].isnull().sum(),
-                "missing_dates": df['show_date'].isnull().sum()
+                "complete_records": latest.dropna().shape[0],
+                "missing_revenue": latest['sales_to_date'].isnull().sum(),
+                "missing_dates": latest['show_date'].isnull().sum()
             },
-            "avg_daily_sales_target": df['daily_sales_target'].mean(skipna=True),
-            "avg_sales_last_7_days": df['avg_sales_last_7_days'].mean(skipna=True),
+            "avg_daily_sales_target": latest['daily_sales_target'].mean(skipna=True),
+            "avg_sales_last_7_days": latest['avg_sales_last_7_days'].mean(skipna=True),
         }
 
         return summary
